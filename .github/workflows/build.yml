@@ -44,11 +44,13 @@ jobs:
     - name: Create merged binary
       run: |
         pip install esptool
-        esptool.py --chip esp32s3 merge_bin -o build/usbane-full.bin \
-          --flash_mode dio --flash_size 2MB --flash_freq 80m \
+        chmod -R u+w build/
+        python -m esptool --chip esp32s3 merge-bin -o build/usbane-full.bin \
+          --flash-mode dio --flash-size 8MB --flash-freq 80m \
           0x0 build/bootloader/bootloader.bin \
           0x8000 build/partition_table/partition-table.bin \
-          0x10000 build/usbane.bin
+          0xf000 build/ota_data_initial.bin \
+          0x20000 build/usbane.bin
         echo "Created merged binary: build/usbane-full.bin"
 
     - name: Upload firmware artifact
