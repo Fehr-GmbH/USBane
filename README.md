@@ -3,11 +3,11 @@
   <img src="apptext.svg" alt="USBane" height="60">
 </p>
 
-[![Build](https://github.com/FehrGmbH/usbane/actions/workflows/build.yml/badge.svg)](https://github.com/FehrGmbH/usbane/actions/workflows/build.yml)
+[![Build](https://github.com/Fehr-GmbH/USBane/actions/workflows/build.yml/badge.svg)](https://github.com/Fehr-GmbH/USBane/actions/workflows/build.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Platform](https://img.shields.io/badge/Platform-ESP32--S3-orange.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
 [![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.x-green.svg)](https://github.com/espressif/esp-idf)
-[![GitHub release](https://img.shields.io/github/v/release/FehrGmbH/usbane?include_prereleases)](https://github.com/FehrGmbH/usbane/releases)
+[![GitHub release](https://img.shields.io/github/v/release/Fehr-GmbH/USBane?include_prereleases)](https://github.com/Fehr-GmbH/USBane/releases)
 
 <p align="center"><b>USB Security Research Tool for ESP32-S3</b></p>
 
