@@ -1,0 +1,10 @@
+menu "USBane Configuration"
+
+    config USBANE_VERSION
+        string "USBane Version"
+        default "1.0.0"
+        help
+            Version string displayed in the web interface and logs.
+
+endmenu
+

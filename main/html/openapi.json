@@ -1,0 +1,735 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "USBane API",
+    "description": "ESP32-S3 USB Host Attack Platform API for USB device enumeration, fuzzing, and exploitation",
+    "version": "1.0.0",
+    "contact": {
+      "name": "USBane Project"
+    }
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "USBane Device"
+    }
+  ],
+  "paths": {
+    "/api/send_request": {
+      "post": {
+        "summary": "Send USB Control Request",
+        "description": "Executes a USB control transfer request with specified parameters",
+        "tags": ["USB Operations"],
+        "parameters": [
+          {
+            "name": "bmRequestType",
+            "in": "query",
+            "description": "Request type and direction bitmap (e.g., 0x80 for Device-to-Host)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "0x80"
+            }
+          },
+          {
+            "name": "bRequest",
+            "in": "query",
+            "description": "Specific request number (e.g., 0x06 for GET_DESCRIPTOR)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "0x06"
+            }
+          },
+          {
+            "name": "wValue",
+            "in": "query",
+            "description": "Word-sized parameter (e.g., descriptor type and index)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "0x0100"
+            }
+          },
+          {
+            "name": "wIndex",
+            "in": "query",
+            "description": "Word-sized parameter (e.g., interface or language ID)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "0x0000"
+            }
+          },
+          {
+            "name": "wLength",
+            "in": "query",
+            "description": "Number of bytes to transfer in data phase",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 18
+            }
+          },
+          {
+            "name": "packetSize",
+            "in": "query",
+            "description": "Maximum packet size for endpoint 0",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 8
+            }
+          },
+          {
+            "name": "maxRetries",
+            "in": "query",
+            "description": "Maximum number of NAK retries (-1 for default)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": -1
+            }
+          },
+          {
+            "name": "dataBytes",
+            "in": "query",
+            "description": "Hex string of data bytes for OUT transfer (e.g., DEADBEEF)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dataMode",
+            "in": "query",
+            "description": "Data transfer mode: 'separate' (DATA OUT stage) or 'append' (appended to SETUP)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": ["separate", "append"],
+              "default": "separate"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "success"
+                    },
+                    "rxBytes": {
+                      "type": "integer",
+                      "description": "Number of bytes received"
+                    },
+                    "dataHex": {
+                      "type": "string",
+                      "description": "Received data in hex format"
+                    },
+                    "dataAscii": {
+                      "type": "string",
+                      "description": "Received data in ASCII format"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Request failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "error"
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Error message"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/status": {
+      "get": {
+        "summary": "Get System Status",
+        "description": "Returns current system status including USB connection state and configuration",
+        "tags": ["System"],
+        "responses": {
+          "200": {
+            "description": "System status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "usbConnected": {
+                      "type": "boolean",
+                      "description": "USB device connection status"
+                    },
+                    "wifiMode": {
+                      "type": "string",
+                      "description": "WiFi mode (ap/client)"
+                    },
+                    "ipAddress": {
+                      "type": "string",
+                      "description": "Current IP address"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/version": {
+      "get": {
+        "summary": "Get Firmware Version",
+        "description": "Returns the current firmware version",
+        "tags": ["System"],
+        "responses": {
+          "200": {
+            "description": "Version information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "type": "string",
+                      "example": "1.0.0"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/device_info": {
+      "get": {
+        "summary": "Get USB Device Information",
+        "description": "Retrieves device, configuration, and string descriptors from connected USB device",
+        "tags": ["USB Operations"],
+        "responses": {
+          "200": {
+            "description": "Device information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "device": {
+                      "type": "object",
+                      "description": "Device descriptor data"
+                    },
+                    "config": {
+                      "type": "object",
+                      "description": "Configuration descriptor data"
+                    },
+                    "strings": {
+                      "type": "object",
+                      "description": "String descriptors"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reset": {
+      "post": {
+        "summary": "Reset USB Device",
+        "description": "Performs a USB bus reset on the connected device",
+        "tags": ["USB Operations"],
+        "responses": {
+          "200": {
+            "description": "Reset successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "reset"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/save_config": {
+      "post": {
+        "summary": "Save Configuration",
+        "description": "Saves current configuration to non-volatile storage",
+        "tags": ["Configuration"],
+        "parameters": [
+          {
+            "name": "maxRetries",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "timeout",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "usbSpeed",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["full", "low"]
+            }
+          },
+          {
+            "name": "otgMode",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["host", "device"]
+            }
+          },
+          {
+            "name": "vid",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pid",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Configuration saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "saved"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/factory_reset": {
+      "post": {
+        "summary": "Factory Reset",
+        "description": "Resets all configuration to factory defaults and reboots the device",
+        "tags": ["Configuration"],
+        "responses": {
+          "200": {
+            "description": "Factory reset initiated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "factory_reset"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stats": {
+      "get": {
+        "summary": "Get Performance Statistics",
+        "description": "Returns USB transfer statistics and performance metrics",
+        "tags": ["System"],
+        "responses": {
+          "200": {
+            "description": "Statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "bytesRx": {
+                      "type": "integer",
+                      "description": "Total bytes received"
+                    },
+                    "bytesTx": {
+                      "type": "integer",
+                      "description": "Total bytes transmitted"
+                    },
+                    "requestCount": {
+                      "type": "integer",
+                      "description": "Total number of requests"
+                    },
+                    "uptime": {
+                      "type": "integer",
+                      "description": "System uptime in seconds"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wifi_config": {
+      "get": {
+        "summary": "Get WiFi Configuration",
+        "description": "Retrieves current WiFi configuration",
+        "tags": ["Configuration"],
+        "responses": {
+          "200": {
+            "description": "Current WiFi configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "mode": {
+                      "type": "string",
+                      "description": "Current WiFi mode (ap/client)"
+                    },
+                    "apSsid": {
+                      "type": "string"
+                    },
+                    "clientSsid": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Configure WiFi",
+        "description": "Updates WiFi configuration (AP or Client mode)",
+        "tags": ["Configuration"],
+        "parameters": [
+          {
+            "name": "mode",
+            "in": "query",
+            "description": "WiFi mode",
+            "schema": {
+              "type": "string",
+              "enum": ["ap", "client"]
+            }
+          },
+          {
+            "name": "apSsid",
+            "in": "query",
+            "description": "Access Point SSID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "apPassword",
+            "in": "query",
+            "description": "Access Point password",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "clientSsid",
+            "in": "query",
+            "description": "Client mode SSID to connect to",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "clientPassword",
+            "in": "query",
+            "description": "Client mode WiFi password",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "WiFi configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "wifi_configured"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/trigger": {
+      "get": {
+        "summary": "Get Trigger State",
+        "description": "Returns the current state of a webhook trigger",
+        "tags": ["Chain Execution"],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "description": "Trigger ID to check",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "trigger1"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Trigger state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Trigger ID"
+                    },
+                    "triggered": {
+                      "type": "boolean",
+                      "description": "Whether trigger is active"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Set Trigger State",
+        "description": "Sets or clears a webhook trigger state",
+        "tags": ["Chain Execution"],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "description": "Trigger ID",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "trigger1"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Trigger state (true to activate, false to clear)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": ["true", "false", "1", "0"],
+              "default": "true"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Trigger state updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "ok"
+                    },
+                    "id": {
+                      "type": "string",
+                      "description": "Trigger ID"
+                    },
+                    "triggered": {
+                      "type": "boolean",
+                      "description": "New trigger state"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gpio": {
+      "get": {
+        "summary": "Read GPIO State",
+        "description": "Read the current state of a GPIO pin",
+        "tags": ["GPIO"],
+        "parameters": [
+          {
+            "name": "pin",
+            "in": "query",
+            "required": true,
+            "description": "GPIO pin number",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "GPIO state read successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "success"
+                    },
+                    "level": {
+                      "type": "integer",
+                      "description": "Pin level (0 or 1)"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Control GPIO Pin",
+        "description": "Set GPIO pin state or wait for GPIO state changes",
+        "tags": ["GPIO"],
+        "parameters": [
+          {
+            "name": "pin",
+            "in": "query",
+            "required": true,
+            "description": "GPIO pin number",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "GPIO action",
+            "schema": {
+              "type": "string",
+              "enum": ["set", "clear", "wait_high", "wait_low"]
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "description": "Pin level for set action (0 or 1)",
+            "schema": {
+              "type": "integer",
+              "enum": [0, 1]
+            }
+          },
+          {
+            "name": "timeout",
+            "in": "query",
+            "description": "Timeout for wait operations in milliseconds",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "GPIO operation successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "integer",
+                      "description": "Pin value for read operations"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "USB Operations",
+      "description": "USB device interaction and fuzzing operations"
+    },
+    {
+      "name": "System",
+      "description": "System status and information"
+    },
+    {
+      "name": "Configuration",
+      "description": "Device configuration management"
+    },
+    {
+      "name": "Chain Execution",
+      "description": "Request chain execution control"
+    },
+    {
+      "name": "GPIO",
+      "description": "GPIO pin control and monitoring"
+    }
+  ]
+}
+

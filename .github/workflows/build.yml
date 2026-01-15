@@ -1,0 +1,82 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Need full history for tags
+
+    - name: Extract version from sdkconfig.defaults
+      id: version
+      run: |
+        VERSION=$(grep 'CONFIG_USBANE_VERSION=' sdkconfig.defaults | cut -d'"' -f2)
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Detected version: $VERSION"
+
+    - name: Check if tag exists
+      id: tag_check
+      run: |
+        if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "Tag v${{ steps.version.outputs.version }} already exists"
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "Tag v${{ steps.version.outputs.version }} does not exist - will create release"
+        fi
+
+    - name: Build with ESP-IDF
+      uses: espressif/esp-idf-ci-action@v1
+      with:
+        esp_idf_version: v5.5.1
+        target: esp32s3
+        path: '.'
+
+    - name: Create merged binary
+      run: |
+        pip install esptool
+        esptool.py --chip esp32s3 merge_bin -o build/usbane-full.bin \
+          --flash_mode dio --flash_size 2MB --flash_freq 80m \
+          0x0 build/bootloader/bootloader.bin \
+          0x8000 build/partition_table/partition-table.bin \
+          0x10000 build/usbane.bin
+        echo "Created merged binary: build/usbane-full.bin"
+
+    - name: Upload firmware artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: usbane-firmware-${{ steps.version.outputs.version }}
+        path: build/usbane-full.bin
+        retention-days: 30
+
+    - name: Create Release
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.version.outputs.version }}
+        name: USBane v${{ steps.version.outputs.version }}
+        body: |
+          ## USBane v${{ steps.version.outputs.version }}
+          
+          ### Installation
+          Flash the single binary at address 0x0:
+          ```bash
+          esptool.py --chip esp32s3 -b 460800 write_flash 0x0 usbane-full.bin
+          ```
+          
+          ### What's New
+          See commit history for changes.
+        files: build/usbane-full.bin
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

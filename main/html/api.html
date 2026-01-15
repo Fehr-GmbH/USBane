@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>USBane API Documentation</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5.10.5/swagger-ui.css">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a1a1a;
+            font-family: Arial;
+        }
+        #swagger-ui {
+            max-width: 1460px;
+            margin: 0 auto;
+            padding: 0 20px 20px 20px;
+        }
+        .topbar {
+            display: none !important;
+        }
+        .scheme-container {
+            display: none !important;
+        }
+        
+        /* Hide default title */
+        .swagger-ui .info .title,
+        .swagger-ui .info hgroup.main {
+            display: none !important;
+        }
+        
+        /* Hide information container and filter */
+        .swagger-ui .information-container,
+        .swagger-ui .filter-container {
+            display: none !important;
+        }
+        
+        /* Dark theme colors matching main UI */
+        .swagger-ui {
+            color: #fff !important;
+        }
+        
+        /* GET methods - USBane red #ff4444 */
+        .swagger-ui .opblock.opblock-get .opblock-summary-method {
+            background: #ff4444 !important;
+            color: #fff !important;
+        }
+        .swagger-ui .opblock.opblock-get {
+            border-color: #ff4444 !important;
+        }
+        .swagger-ui .opblock.opblock-get .opblock-summary {
+            border-color: #ff4444 !important;
+        }
+        
+        /* POST methods - green #28a745 */
+        .swagger-ui .opblock.opblock-post .opblock-summary-method {
+            background: #28a745 !important;
+            color: #fff !important;
+        }
+        .swagger-ui .opblock.opblock-post {
+            border-color: #28a745 !important;
+        }
+        .swagger-ui .opblock.opblock-post .opblock-summary {
+            border-color: #28a745 !important;
+        }
+        
+        .swagger-ui .opblock-summary-path {
+            color: #fff !important;
+        }
+        
+        
+        /* Section backgrounds - match #2a2a2a */
+        .swagger-ui .opblock {
+            background: #2a2a2a !important;
+            border: 1px solid #555 !important;
+        }
+        .swagger-ui .opblock .opblock-summary {
+            background: #333 !important;
+        }
+        .swagger-ui .opblock.is-open .opblock-summary {
+            border-bottom: 1px solid #555 !important;
+        }
+        
+        /* Buttons */
+        .swagger-ui .btn {
+            background: #ff4444 !important;
+            color: #fff !important;
+            border: none !important;
+        }
+        .swagger-ui .btn:hover {
+            background: #ff6666 !important;
+        }
+        .swagger-ui .btn.authorize {
+            background: #28a745 !important;
+        }
+        .swagger-ui .btn.cancel {
+            background: #6c757d !important;
+        }
+        
+        /* Input fields - match #333 */
+        .swagger-ui input[type=text],
+        .swagger-ui input[type=password],
+        .swagger-ui select,
+        .swagger-ui textarea {
+            background: #333 !important;
+            color: #fff !important;
+            border: 1px solid #555 !important;
+        }
+        
+        /* Tables */
+        .swagger-ui table thead tr th,
+        .swagger-ui table thead tr td {
+            background: #333 !important;
+            color: #aaa !important;
+            border-color: #555 !important;
+        }
+        .swagger-ui table tbody tr td {
+            background: #2a2a2a !important;
+            color: #fff !important;
+            border-color: #555 !important;
+        }
+        
+        /* Response/Request body */
+        .swagger-ui .responses-inner h4,
+        .swagger-ui .responses-inner h5 {
+            color: #fff !important;
+        }
+        .swagger-ui .response-col_status {
+            color: #fff !important;
+        }
+        .swagger-ui .response-col_description {
+            color: #aaa !important;
+        }
+        .swagger-ui .opblock-description-wrapper,
+        .swagger-ui .opblock-summary-description {
+            color: #aaa !important;
+        }
+        
+        /* Code blocks */
+        .swagger-ui pre,
+        .swagger-ui code {
+            background: #1a1a1a !important;
+            color: #fff !important;
+            border: 1px solid #555 !important;
+        }
+        .swagger-ui .microlight {
+            color: #fff !important;
+        }
+        
+        /* Models section */
+        .swagger-ui .model-box {
+            background: #2a2a2a !important;
+            border: 1px solid #555 !important;
+        }
+        
+        /* Main wrapper */
+        .swagger-ui .wrapper {
+            padding: 0;
+        }
+        
+        /* Tags */
+        .swagger-ui .opblock-tag {
+            color: #fff !important;
+            border-bottom: 1px solid #555 !important;
+        }
+        
+        /* Parameters */
+        .swagger-ui .parameter__name,
+        .swagger-ui .parameter__type {
+            color: #fff !important;
+        }
+        .swagger-ui .parameter__in {
+            color: #aaa !important;
+        }
+        
+        /* Responses */
+        .swagger-ui .responses-wrapper {
+            background: transparent !important;
+        }
+        .swagger-ui .response {
+            background: #2a2a2a !important;
+            border: 1px solid #555 !important;
+        }
+        
+        /* Models */
+        .swagger-ui .model-title {
+            color: #fff !important;
+        }
+        .swagger-ui .prop-type,
+        .swagger-ui .prop-format {
+            color: #aaa !important;
+        }
+        
+    </style>
+</head>
+<body>
+    <div style="max-width:1460px;margin:0 auto;padding:20px 20px 0 20px;">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
+            <img src="/applogo.png" alt="Logo" style="height:40px;">
+            <img src="/apptext.svg" alt="USBane" style="height:28px;">
+            <span style="display:inline-block;background:#ff4444;color:#fff;font-size:11px;padding:3px 8px;border-radius:12px;font-weight:normal;">API Documentation</span>
+        </div>
+    </div>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5.10.5/swagger-ui-bundle.js"></script>
+    <script src="https://unpkg.com/swagger-ui-dist@5.10.5/swagger-ui-standalone-preset.js"></script>
+    <script>
+        window.onload = function() {
+            window.ui = SwaggerUIBundle({
+                url: "/openapi.json",
+                dom_id: '#swagger-ui',
+                deepLinking: true,
+                presets: [
+                    SwaggerUIBundle.presets.apis,
+                    SwaggerUIStandalonePreset
+                ],
+                plugins: [
+                    SwaggerUIBundle.plugins.DownloadUrl
+                ],
+                layout: "StandaloneLayout",
+                defaultModelsExpandDepth: 1,
+                defaultModelExpandDepth: 1,
+                docExpansion: 'list',
+                filter: false,
+                showExtensions: true,
+                showCommonExtensions: true,
+                tryItOutEnabled: true
+            });
+        };
+    </script>
+</body>
+</html>
+

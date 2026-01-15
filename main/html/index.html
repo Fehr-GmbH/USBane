@@ -1,0 +1,1352 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name='viewport' content='width=device-width,initial-scale=1'>
+    <title>USBane</title>
+    <link rel='icon' type='image/x-icon' href='/favicon.ico'>
+    <style>
+        body {
+            font-family: Arial;
+            margin: 20px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        h1 {
+            color: #ff4444;
+            margin-bottom: 10px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        .section {
+            background: #2a2a2a;
+            padding: 20px;
+            margin: 10px 0;
+            border-radius: 8px;
+        }
+        .control {
+            margin: 15px 0;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #aaa;
+        }
+        input, select {
+            width: 100%;
+            padding: 10px;
+            background: #333;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background: #ff4444;
+            color: #fff;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 5px;
+        }
+        button:hover {
+            background: #ff6666;
+        }
+        .status {
+            background: #333;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .conn-status {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .conn-connected {
+            background: #28a745;
+            color: #fff;
+        }
+        .conn-disconnected {
+            background: #dc3545;
+            color: #fff;
+        }
+        .header-bar {
+            background: #2a2a2a;
+            padding: 12px 20px;
+            border-radius: 8px;
+            margin: 10px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        .tab {
+            background: #333;
+            padding: 12px 24px;
+            border-radius: 8px 8px 0 0;
+            cursor: pointer;
+            border: 2px solid transparent;
+        }
+        .tab.active {
+            background: #2a2a2a;
+            border-color: #ff4444;
+            border-bottom: none;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        small {
+            display: block;
+            margin-top: 5px;
+            font-size: 11px;
+        }
+        /* Modern Toggle Switch */
+        .toggle-switch {
+            position: relative;
+            width: 44px;
+            height: 24px;
+            display: inline-block;
+        }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+            position: absolute;
+        }
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #444;
+            transition: 0.3s;
+            border-radius: 24px;
+            border: 1px solid #555;
+        }
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 2px;
+            bottom: 2px;
+            background-color: #888;
+            transition: 0.3s;
+            border-radius: 50%;
+        }
+        .toggle-switch input:checked + .toggle-slider {
+            background-color: #ff4444;
+            border-color: #ff4444;
+        }
+        .toggle-switch input:checked + .toggle-slider:before {
+            transform: translateX(20px);
+            background-color: #fff;
+        }
+        .toggle-switch input:focus + .toggle-slider {
+            box-shadow: 0 0 3px #ff4444;
+        }
+        /* Accordion styles */
+        .accordion {
+            margin-bottom: 8px;
+        }
+        .accordion-header {
+            background: #333;
+            padding: 14px 18px;
+            cursor: pointer;
+            border-radius: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background 0.2s;
+            border: 1px solid #444;
+        }
+        .accordion-header:hover {
+            background: #3a3a3a;
+        }
+        .accordion-header.active {
+            background: #ff4444;
+            border-color: #ff4444;
+            border-radius: 6px 6px 0 0;
+        }
+        .accordion-title {
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .accordion-icon {
+            font-size: 18px;
+            transition: transform 0.3s;
+        }
+        .accordion-header.active .accordion-icon {
+            transform: rotate(45deg);
+        }
+        .accordion-content {
+            display: none;
+            padding: 16px 18px;
+            background: #1a1a1a;
+            border: 1px solid #444;
+            border-top: none;
+            border-radius: 0 0 6px 6px;
+            line-height: 1.6;
+            color: #ccc;
+            font-size: 13px;
+        }
+        .accordion-content.active {
+            display: block;
+        }
+        .accordion-content code {
+            background: #333;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+            color: #ff8888;
+        }
+        .accordion-content ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .accordion-content li {
+            margin: 6px 0;
+        }
+        #appVersion[style*="cursor: pointer"]:hover {
+            opacity: 0.8;
+            transform: scale(1.05);
+            transition: all 0.2s;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        /* Responsive: stack configuration controls on smaller screens */
+        @media (max-width: 900px) {
+            #tab4 .section > div[style*="grid-template-columns"] {
+                grid-template-columns: 1fr !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class='container'>
+        <h1 style='display:flex;align-items:center;gap:12px;'>
+            <img src='/applogo.png' alt='Logo' style='height:40px;'>
+            <img src='/apptext.svg' alt='USBane' style='height:28px;'>
+            <span id='appVersion' style='display:inline-block;background:#ff4444;color:#fff;font-size:11px;padding:3px 8px;border-radius:12px;font-weight:normal;'>v...</span>
+        </h1>
+
+        <div class='header-bar'>
+            <div style='display:flex;gap:10px;align-items:center;flex:1;'>
+                <div class='conn-status' id='connStatus' style='background:#6c757d;'>Checking...</div>
+                <div id='throughputStats' style='display:inline-block;padding:4px 10px;border-radius:4px;font-size:11px;font-family:monospace;font-weight:bold;background:#333;color:#888;'>0 req/s | down: 0.0KB/s | up: 0.0KB/s | CPU0: 0% | CPU1: 0% | RAM: 0/0KB (0%)</div>
+            </div>
+            <div style='display:flex;gap:10px;'>
+                <button onclick='sendReset()' style='background:#e74c3c;margin:0;padding:8px 12px;font-size:12px;'>USB Reset</button>
+                <button onclick='window.open("/api", "_blank")' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>API Docs</button>
+            </div>
+        </div>
+
+        <div class='tabs'>
+            <div class='tab active' onclick='switchTab(0)'>Single Request</div>
+            <div class='tab' onclick='switchTab(1)'>Request Chain</div>
+            <div class='tab' onclick='switchTab(2)'>Bruteforce</div>
+            <div class='tab' onclick='switchTab(3)'>Device Info</div>
+            <div class='tab' onclick='switchTab(4)'>Configuration</div>
+            <div class='tab' onclick='switchTab(5)'>FAQ</div>
+        </div>
+
+        <!-- Single Request Tab -->
+        <div class='tab-content active' id='tab0'>
+            <div class='section'>
+                <div style='display:flex;justify-content:flex-end;gap:10px;margin-bottom:15px;'>
+                    <button onclick='importSingleRequestCSV()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Import CSV</button>
+                    <button onclick='exportSingleRequestCSV()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Export CSV</button>
+                    <button onclick='clearSingleRequest()' style='background:#dc3545;margin:0;padding:8px 12px;font-size:12px;'>Clear All</button>
+                </div>
+                <div style='display:grid;grid-template-columns:auto 1fr 2fr;gap:10px;align-items:center;'>
+                    <span style='color:#888;font-size:11px;'>Field</span>
+                    <span style='color:#888;font-size:11px;'>Value</span>
+                    <span style='color:#888;font-size:11px;'>Quick Select</span>
+                    
+                    <label style='margin:0;white-space:nowrap;'>bmRequestType</label>
+                    <input type='text' id='bmRequestType' value='0x80' placeholder='0x80' oninput='validateHexInput(this)'>
+                    <select onchange='document.getElementById("bmRequestType").value=this.value' style='font-size:11px;'>
+                        <option value=''>Quick Select...</option>
+                        <option value='0x80'>Device -> Host, Standard, Device (0x80)</option>
+                        <option value='0x81'>Device -> Host, Standard, Interface (0x81)</option>
+                        <option value='0x82'>Device -> Host, Standard, Endpoint (0x82)</option>
+                        <option value='0x00'>Host -> Device, Standard, Device (0x00)</option>
+                        <option value='0x01'>Host -> Device, Standard, Interface (0x01)</option>
+                        <option value='0x02'>Host -> Device, Standard, Endpoint (0x02)</option>
+                        <option value='0x40'>Host -> Device, Vendor, Device (0x40)</option>
+                        <option value='0xC0'>Device -> Host, Vendor, Device (0xC0)</option>
+                        <option value='0x21'>Host -> Device, Class, Interface (0x21)</option>
+                        <option value='0xA1'>Device -> Host, Class, Interface (0xA1)</option>
+                    </select>
+                    
+                    <label style='margin:0;white-space:nowrap;'>bRequest</label>
+                    <input type='text' id='bRequest' value='0x06' placeholder='0x06' oninput='validateHexInput(this)'>
+                    <select onchange='document.getElementById("bRequest").value=this.value' style='font-size:11px;'>
+                        <option value=''>Quick Select...</option>
+                        <option value='0x00'>GET_STATUS (0x00)</option>
+                        <option value='0x01'>CLEAR_FEATURE (0x01)</option>
+                        <option value='0x03'>SET_FEATURE (0x03)</option>
+                        <option value='0x05'>SET_ADDRESS (0x05)</option>
+                        <option value='0x06'>GET_DESCRIPTOR (0x06)</option>
+                        <option value='0x07'>SET_DESCRIPTOR (0x07)</option>
+                        <option value='0x08'>GET_CONFIGURATION (0x08)</option>
+                        <option value='0x09'>SET_CONFIGURATION (0x09)</option>
+                        <option value='0x0A'>GET_INTERFACE (0x0A)</option>
+                        <option value='0x0B'>SET_INTERFACE (0x0B)</option>
+                        <option value='0x0C'>SYNCH_FRAME (0x0C)</option>
+                        <option value='0xFF'>INVALID/VENDOR (0xFF)</option>
+                    </select>
+                    
+                    <label style='margin:0;white-space:nowrap;'>wValue</label>
+                    <input type='text' id='wValue' value='0x0100' placeholder='0x0100' oninput='validateHexInput(this)'>
+                    <select onchange='document.getElementById("wValue").value=this.value' style='font-size:11px;'>
+                        <option value=''>Quick Select...</option>
+                        <option value='0x0100'>Device Descriptor (0x0100)</option>
+                        <option value='0x0200'>Config Descriptor (0x0200)</option>
+                        <option value='0x0300'>String Desc #0 (Lang) (0x0300)</option>
+                        <option value='0x0301'>String Desc #1 (0x0301)</option>
+                        <option value='0x0302'>String Desc #2 (0x0302)</option>
+                        <option value='0x0303'>String Desc #3 (0x0303)</option>
+                        <option value='0x0400'>Interface Descriptor (0x0400)</option>
+                        <option value='0x0500'>Endpoint Descriptor (0x0500)</option>
+                        <option value='0x0600'>Device Qualifier (0x0600)</option>
+                        <option value='0x0F00'>BOS Descriptor (0x0F00)</option>
+                    </select>
+                    
+                    <label style='margin:0;white-space:nowrap;'>wIndex</label>
+                    <input type='text' id='wIndex' value='0x0000' placeholder='0x0000' oninput='validateHexInput(this)'>
+                    <select onchange='document.getElementById("wIndex").value=this.value' style='font-size:11px;'>
+                        <option value=''>Quick Select...</option>
+                        <option value='0x0000'>Default (0x0000)</option>
+                        <option value='0x0409'>Language: English US (0x0409)</option>
+                        <option value='0x0407'>Language: German (0x0407)</option>
+                        <option value='0x040C'>Language: French (0x040C)</option>
+                        <option value='0x0411'>Language: Japanese (0x0411)</option>
+                        <option value='0x0001'>Interface 1 (0x0001)</option>
+                        <option value='0x0002'>Interface 2 (0x0002)</option>
+                        <option value='0x0081'>Endpoint IN 1 (0x0081)</option>
+                        <option value='0x0001'>Endpoint OUT 1 (0x0001)</option>
+                    </select>
+                    
+                    <label style='margin:0;white-space:nowrap;'>wLength</label>
+                    <input type='number' id='wLength' value='18' min='0' max='65535'>
+                    <select onchange='document.getElementById("wLength").value=this.value' style='font-size:11px;'>
+                        <option value=''>Quick Select...</option>
+                        <option value='0'>0 - No Data Phase</option>
+                        <option value='8'>8 - Minimal</option>
+                        <option value='18'>18 - Device Descriptor</option>
+                        <option value='64'>64 - Standard Buffer</option>
+                        <option value='255'>255 - Config Descriptor</option>
+                        <option value='256'>256 - Full Config</option>
+                        <option value='512'>512 - Large Buffer</option>
+                        <option value='1024'>1024 - Very Large</option>
+                        <option value='4096'>4096 - Maximum</option>
+                        <option value='65535'>65535 - Overflow Test</option>
+                    </select>
+                    
+                    <label style='margin:0;white-space:nowrap;'>Packet Size</label>
+                    <input type='number' id='packetSize' value='8' min='1' max='256'>
+                    <select onchange='document.getElementById("packetSize").value=this.value' style='font-size:11px;'>
+                        <option value=''>Quick Select...</option>
+                        <option value='1'>1 - Truncated (Min)</option>
+                        <option value='4'>4 - Truncated (Half)</option>
+                        <option value='7'>7 - Truncated (Almost)</option>
+                        <option value='8'>8 - Standard SETUP</option>
+                        <option value='16'>16 - Oversized (2x)</option>
+                        <option value='32'>32 - Oversized (4x)</option>
+                        <option value='64'>64 - Oversized (8x)</option>
+                        <option value='128'>128 - Very Oversized</option>
+                        <option value='256'>256 - Maximum Oversized</option>
+                    </select>
+                    
+                    <label style='margin:0;white-space:nowrap;'>Mode & Data</label>
+                    <div style='display:flex;border:1px solid #555;border-radius:6px;overflow:hidden;'>
+                        <div id='dataMode_separate' onclick='selectDataMode("separate")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#ff4444;color:#fff;font-weight:bold;transition:all 0.2s;font-size:10px;'>DATA OUT</div>
+                        <div id='dataMode_append' onclick='selectDataMode("append")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:10px;'>APPEND</div>
+                    </div>
+                    <input type='text' id='dataBytes' placeholder='DEADBEEF0101' style='font-family:monospace;' oninput='validateHexInput(this); updatePacketSizeOnDataMode()'>
+                    <input type='hidden' name='dataMode' id='dataMode' value='separate'>
+                </div>
+                <div style='display:flex;gap:10px;justify-content:center;margin-top:15px;'>
+                    <button onclick='sendRequest()' id='sendBtn' style='background:#28a745;margin:0;'>Execute Request</button>
+                    <button onclick='addToChain()' style='background:#17a2b8;margin:0;'>Add to Chain</button>
+                </div>
+            </div>
+            <input type='file' id='singleReqFileInput' accept='.csv' style='display:none;' onchange='handleSingleRequestFileImport(event)'>
+        </div>
+
+        <!-- Request Chain Tab -->
+        <div class='tab-content' id='tab1'>
+            <div class='section'>
+                <div style='display:flex;justify-content:flex-end;gap:10px;margin-bottom:15px;'>
+                    <button onclick='importChainCSV()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Import CSV</button>
+                    <button onclick='exportChainCSV()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Export CSV</button>
+                    <button onclick='clearChain()' style='background:#dc3545;margin:0;padding:8px 12px;font-size:12px;'>Clear All</button>
+                </div>
+                
+                <!-- Quick Add Request -->
+                <div style='background:#252525;padding:12px;border-radius:6px;margin-bottom:10px;border:1px solid #444;'>
+                    <div style='display:flex;gap:8px;align-items:flex-end;'>
+                        <div style='flex:1;display:grid;grid-template-columns:repeat(7, 1fr) 2fr;gap:8px;'>
+                            <div>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>bmReqType</label>
+                                <input type='text' id='chain_quick_bmRequestType' value='0x80' placeholder='0x80' style='padding:6px;font-size:11px;width:100%;' oninput='validateHexInput(this)'>
+                            </div>
+                            <div>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>bRequest</label>
+                                <input type='text' id='chain_quick_bRequest' value='0x06' placeholder='0x06' style='padding:6px;font-size:11px;width:100%;' oninput='validateHexInput(this)'>
+                            </div>
+                            <div>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>wValue</label>
+                                <input type='text' id='chain_quick_wValue' value='0x0100' placeholder='0x0100' style='padding:6px;font-size:11px;width:100%;' oninput='validateHexInput(this)'>
+                            </div>
+                            <div>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>wIndex</label>
+                                <input type='text' id='chain_quick_wIndex' value='0x0000' placeholder='0x0000' style='padding:6px;font-size:11px;width:100%;' oninput='validateHexInput(this)'>
+                            </div>
+                            <div>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>wLength</label>
+                                <input type='number' id='chain_quick_wLength' value='18' min='0' max='65535' placeholder='18' style='padding:6px;font-size:11px;width:100%;'>
+                            </div>
+                            <div>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>PktSize</label>
+                                <input type='number' id='chain_quick_packetSize' value='8' min='1' max='256' placeholder='8' style='padding:6px;font-size:11px;width:100%;'>
+                            </div>
+                            <div>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Mode</label>
+                                <div style='display:flex;border:1px solid #555;border-radius:4px;overflow:hidden;'>
+                                    <div id='chain_quick_dataMode_separate' onclick='selectChainQuickDataMode("separate")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#ff4444;color:#fff;font-weight:bold;transition:all 0.2s;font-size:9px;'>OUT</div>
+                                    <div id='chain_quick_dataMode_append' onclick='selectChainQuickDataMode("append")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:9px;'>APP</div>
+                                </div>
+                            </div>
+                            <div>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Data (hex)</label>
+                                <input type='text' id='chain_quick_data' placeholder='Optional' style='padding:6px;font-size:11px;font-family:monospace;width:100%;' oninput='validateHexInput(this)'>
+                            </div>
+                        </div>
+                        <button onclick='addQuickChainRequest()' style='background:#17a2b8;margin:0;padding:8px 16px;font-size:11px;white-space:nowrap;height:29px;width:120px;'>+ Add Request</button>
+                        <input type='hidden' id='chain_quick_dataMode' value='separate'>
+                    </div>
+                </div>
+                
+                <!-- Quick Add Wait -->
+                <div style='background:#252525;padding:12px;border-radius:6px;margin-bottom:10px;border:1px solid #444;'>
+                    <div style='display:flex;gap:8px;align-items:flex-end;'>
+                        <div style='display:grid;grid-template-columns:repeat(7, 1fr) 80px 1fr;gap:8px;flex:1;'>
+                            <div style='grid-column:span 3;'>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Wait Type</label>
+                                <div style='display:flex;border:1px solid #555;border-radius:4px;overflow:hidden;'>
+                                    <div id='wait_type_button' onclick='selectWaitType("button")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#17a2b8;color:#fff;font-weight:bold;transition:all 0.2s;font-size:9px;'>BUTTON</div>
+                                    <div id='wait_type_webhook' onclick='selectWaitType("webhook")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:9px;'>WEBHOOK</div>
+                                    <div id='wait_type_gpio' onclick='selectWaitType("gpio")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:9px;'>GPIO</div>
+                                    <div id='wait_type_usb_reset' onclick='selectWaitType("usb_reset")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:9px;'>RESET</div>
+                                    <div id='wait_type_delay' onclick='selectWaitType("delay")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:9px;'>DELAY</div>
+                                </div>
+                            </div>
+                            <div id='wait_fields' style='grid-column:span 6;display:flex;gap:8px;'>
+                                <!-- Button fields (default) -->
+                                <div style='flex:1;'>
+                                    <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Label</label>
+                                    <input type='text' id='wait_button_label' value='Press Continue to proceed' placeholder='Button label' style='padding:6px;font-size:11px;width:100%;'>
+                                </div>
+                            </div>
+                        </div>
+                        <button onclick='addQuickWait()' style='background:#17a2b8;margin:0;padding:8px 16px;font-size:11px;white-space:nowrap;height:29px;width:120px;'>+ Add Wait</button>
+                        <input type='hidden' id='wait_current_type' value='button'>
+                    </div>
+                </div>
+                
+                <!-- Quick Add Action -->
+                <div style='background:#252525;padding:12px;border-radius:6px;margin-bottom:10px;border:1px solid #444;'>
+                    <div style='display:flex;gap:8px;align-items:flex-end;'>
+                        <div style='display:grid;grid-template-columns:repeat(7, 1fr) 80px 1fr;gap:8px;flex:1;'>
+                            <div style='grid-column:span 3;'>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Action Type</label>
+                                <div style='display:flex;border:1px solid #555;border-radius:4px;overflow:hidden;'>
+                                    <div id='action_type_http' onclick='selectActionType("http")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#28a745;color:#fff;font-weight:bold;transition:all 0.2s;font-size:9px;'>HTTP</div>
+                                    <div id='action_type_gpio_out' onclick='selectActionType("gpio_out")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:9px;'>GPIO</div>
+                                    <div id='action_type_comment' onclick='selectActionType("comment")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:9px;'>COMMENT</div>
+                                    <div id='action_type_copy' onclick='selectActionType("copy")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:9px;'>COPY</div>
+                                    <div id='action_type_goto' onclick='selectActionType("goto")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:9px;'>GOTO</div>
+                                </div>
+                            </div>
+                            <div id='action_fields' style='grid-column:span 6;display:flex;gap:8px;'>
+                                <!-- HTTP fields (default) -->
+                                <div style='flex:1;'>
+                                    <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>URL</label>
+                                    <input type='text' id='action_http_url' value='http://example.com/api' placeholder='http://...' style='padding:6px;font-size:11px;width:100%;'>
+                                </div>
+                            </div>
+                        </div>
+                        <button onclick='addQuickAction()' style='background:#17a2b8;margin:0;padding:8px 16px;font-size:11px;white-space:nowrap;height:29px;width:120px;'>+ Add Action</button>
+                        <input type='hidden' id='action_current_type' value='http'>
+                    </div>
+                </div>
+                
+                <!-- Quick Add Condition -->
+                <div style='background:#252525;padding:12px;border-radius:6px;margin-bottom:10px;border:1px solid #444;'>
+                    <div style='display:flex;gap:8px;align-items:flex-end;'>
+                        <div style='display:grid;grid-template-columns:repeat(10, 1fr) 80px;gap:8px;flex:1;'>
+                            <!-- Value A -->
+                            <div style='grid-column:span 2;'>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Value A</label>
+                                <select id='condition_value_a_source' onchange='selectConditionSourceA()' style='padding:6px;font-size:11px;width:100%;'>
+                                    <option value='rxbytes'>RxBytes</option>
+                                    <option value='responsehex'>Response Hex</option>
+                                    <option value='manual'>Manual Hex</option>
+                                </select>
+                            </div>
+                            <div id='condition_a_reqno_div'>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>ReqNo</label>
+                                <input type='number' id='condition_a_reqno' value='-1' placeholder='-1=last' style='padding:6px;font-size:11px;width:100%;'>
+                            </div>
+                            <div id='condition_a_length_div'>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Length</label>
+                                <input type='number' id='condition_a_length' value='-1' placeholder='-1=all' style='padding:6px;font-size:11px;width:100%;'>
+                            </div>
+                            <div id='condition_a_value_div' style='display:none;'>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Hex Value</label>
+                                <input type='text' id='condition_a_value' placeholder='9D' onkeyup='validateHexInput(this)' style='padding:6px;font-size:11px;width:100%;'>
+                            </div>
+                            
+                            <!-- Operator -->
+                            <div>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Operator</label>
+                                <select id='condition_operator' style='padding:6px;font-size:11px;width:100%;'>
+                                    <option value='=='>==</option>
+                                    <option value='!='>!=</option>
+                                    <option value='<'><</option>
+                                    <option value='<='><=</option>
+                                    <option value='>'>></option>
+                                    <option value='>='>>=</option>
+                                    <option value='contains'>contains</option>
+                                </select>
+                            </div>
+                            
+                            <!-- Value B -->
+                            <div style='grid-column:span 2;'>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Value B</label>
+                                <select id='condition_value_b_source' onchange='selectConditionSourceB()' style='padding:6px;font-size:11px;width:100%;'>
+                                    <option value='rxbytes'>RxBytes</option>
+                                    <option value='responsehex'>Response Hex</option>
+                                    <option value='manual' selected>Manual Hex</option>
+                                </select>
+                            </div>
+                            <div id='condition_b_reqno_div' style='display:none;'>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>ReqNo</label>
+                                <input type='number' id='condition_b_reqno' value='-1' placeholder='-1=last' style='padding:6px;font-size:11px;width:100%;'>
+                            </div>
+                            <div id='condition_b_length_div' style='display:none;'>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Length</label>
+                                <input type='number' id='condition_b_length' value='-1' placeholder='-1=all' style='padding:6px;font-size:11px;width:100%;'>
+                            </div>
+                            <div id='condition_b_value_div'>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Hex Value</label>
+                                <input type='text' id='condition_b_value' placeholder='9D' onkeyup='validateHexInput(this)' style='padding:6px;font-size:11px;width:100%;'>
+                            </div>
+                            
+                            <!-- Then -->
+                            <div style='grid-column:span 2;'>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Then</label>
+                                <select id='condition_action' style='padding:6px;font-size:11px;width:100%;'>
+                                    <option value='continue'>continue</option>
+                                    <option value='skip_next'>skip next</option>
+                                    <option value='break'>break</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button onclick='addQuickCondition()' style='background:#17a2b8;margin:0;padding:8px 16px;font-size:11px;white-space:nowrap;height:29px;width:120px;'>+ Add Condition</button>
+                    </div>
+                </div>
+                
+                <div id='chainList' style='max-height:400px;overflow-y:auto;background:#1a1a1a;border:1px solid #555;border-radius:4px;min-height:100px;'>
+                    <div id='chainEmpty' style='padding:40px;text-align:center;color:#666;'>
+                        No requests in chain. Use "Add to Chain" from Single Request tab.
+                    </div>
+                    <table id='chainTable' style='width:100%;border-collapse:collapse;font-size:11px;font-family:monospace;display:none;'>
+                        <thead style='background:#333;position:sticky;top:0;'>
+                            <tr>
+                                <th style='padding:6px;border:1px solid #555;width:30px;'>#</th>
+                                <th style='padding:6px;border:1px solid #555;width:70px;'>Type</th>
+                                <th style='padding:6px;border:1px solid #555;'>bmReqType</th>
+                                <th style='padding:6px;border:1px solid #555;'>bReq</th>
+                                <th style='padding:6px;border:1px solid #555;'>wValue</th>
+                                <th style='padding:6px;border:1px solid #555;'>wIndex</th>
+                                <th style='padding:6px;border:1px solid #555;'>wLen</th>
+                                <th style='padding:6px;border:1px solid #555;'>PktSize</th>
+                                <th style='padding:6px;border:1px solid #555;'>Data/Config</th>
+                                <th style='padding:6px;border:1px solid #555;width:80px;'>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id='chainTableBody'></tbody>
+                    </table>
+                </div>
+                
+                <div class='control'>
+                    <label>Delay between requests (ms):</label>
+                    <input type='number' id='chain_delay' value='50' min='0' max='5000'>
+                </div>
+                <div style='display:flex;gap:10px;justify-content:center;margin-top:15px;'>
+                    <button onclick='executeChain()' id='chainExecBtn' style='background:#28a745;margin:0;'>Execute Chain</button>
+                    <button onclick='continueChain()' id='chainContinueBtn' style='background:#17a2b8;margin:0;display:none;'>Continue</button>
+                    <button onclick='stopChain()' id='chainStopBtn' style='background:#dc3545;margin:0;display:none;'>Stop</button>
+                </div>
+                <div id='chainProgress' style='margin-top:10px;text-align:center;color:#888;'></div>
+                <div id='chainWaitInfo' style='margin-top:10px;text-align:center;color:#17a2b8;display:none;'></div>
+            </div>
+            <input type='file' id='chainFileInput' accept='.csv' style='display:none;' onchange='handleChainFileImport(event)'>
+        </div>
+
+        <!-- Bruteforce Tab -->
+        <div class='tab-content' id='tab2'>
+            <div class='section'>
+                <div style='display:flex;justify-content:flex-end;gap:10px;margin-bottom:15px;'>
+                    <button onclick='importBruteforceCSV()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Import CSV</button>
+                    <button onclick='exportBruteforceCSV()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Export CSV</button>
+                    <button onclick='clearBruteforce()' style='background:#dc3545;margin:0;padding:8px 12px;font-size:12px;'>Clear All</button>
+                </div>
+                <div style='display:grid;grid-template-columns:auto 50px 1fr 1fr 2fr;gap:10px;align-items:center;'>
+                    <span style='color:#888;font-size:11px;'>Field</span>
+                    <span style='color:#888;font-size:11px;text-align:center;'>Iterate</span>
+                    <span style='color:#888;font-size:11px;'>Value / Start</span>
+                    <span style='color:#888;font-size:11px;'>End</span>
+                    <span style='color:#888;font-size:11px;'>Exclude</span>
+                    
+                    <label style='margin:0;white-space:nowrap;'>bmRequestType</label>
+                    <label class='toggle-switch'><input type='checkbox' id='bf_bmRequestType' onchange='toggleBFField("bmRequestType")'><span class='toggle-slider'></span></label>
+                    <input type='text' id='bf_bmRequestType_start' value='0x80' placeholder='Value' oninput='validateHexInput(this)'>
+                    <input type='text' id='bf_bmRequestType_end' value='0xFF' placeholder='End' disabled style='background:#1a1a1a;' oninput='validateHexInput(this)'>
+                    <input type='text' id='bf_bmRequestType_exclude' placeholder='e.g., 0x05,0x06,0x07' disabled style='font-size:11px;background:#1a1a1a;' oninput='validateHexInput(this)'>
+                    
+                    <label style='margin:0;white-space:nowrap;'>bRequest</label>
+                    <label class='toggle-switch'><input type='checkbox' id='bf_bRequest' onchange='toggleBFField("bRequest")'><span class='toggle-slider'></span></label>
+                    <input type='text' id='bf_bRequest_start' value='0x06' placeholder='Value' oninput='validateHexInput(this)'>
+                    <input type='text' id='bf_bRequest_end' value='0xFF' placeholder='End' disabled style='background:#1a1a1a;' oninput='validateHexInput(this)'>
+                    <input type='text' id='bf_bRequest_exclude' placeholder='e.g., 0x05,0x06,0x07' disabled style='font-size:11px;background:#1a1a1a;' oninput='validateHexInput(this)'>
+                    
+                    <label style='margin:0;white-space:nowrap;'>wValue Hi</label>
+                    <label class='toggle-switch'><input type='checkbox' id='bf_wValueHi' onchange='toggleBFField("wValueHi")'><span class='toggle-slider'></span></label>
+                    <input type='text' id='bf_wValueHi_start' value='0x01' placeholder='Value' oninput='validateHexInput(this)'>
+                    <input type='text' id='bf_wValueHi_end' value='0x0F' placeholder='End' disabled style='background:#1a1a1a;' oninput='validateHexInput(this)'>
+                    <input type='text' id='bf_wValueHi_exclude' placeholder='e.g., 0x05,0x06' disabled style='font-size:11px;background:#1a1a1a;' oninput='validateHexInput(this)'>
+                    
+                    <label style='margin:0;white-space:nowrap;'>wValue Lo</label>
+                    <label class='toggle-switch'><input type='checkbox' id='bf_wValueLo' onchange='toggleBFField("wValueLo")'><span class='toggle-slider'></span></label>
+                    <input type='text' id='bf_wValueLo_start' value='0x00' placeholder='Value' oninput='validateHexInput(this)'>
+                    <input type='text' id='bf_wValueLo_end' value='0xFF' placeholder='End' disabled style='background:#1a1a1a;' oninput='validateHexInput(this)'>
+                    <input type='text' id='bf_wValueLo_exclude' placeholder='e.g., 0x00,0xFF' disabled style='font-size:11px;background:#1a1a1a;' oninput='validateHexInput(this)'>
+                    
+                    <label style='margin:0;white-space:nowrap;'>wIndex Hi</label>
+                    <label class='toggle-switch'><input type='checkbox' id='bf_wIndexHi' onchange='toggleBFField("wIndexHi")'><span class='toggle-slider'></span></label>
+                    <input type='text' id='bf_wIndexHi_start' value='0x00' placeholder='Value' oninput='validateHexInput(this)'>
+                    <input type='text' id='bf_wIndexHi_end' value='0xFF' placeholder='End' disabled style='background:#1a1a1a;' oninput='validateHexInput(this)'>
+                    <input type='text' id='bf_wIndexHi_exclude' placeholder='e.g., 0x04,0x09' disabled style='font-size:11px;background:#1a1a1a;' oninput='validateHexInput(this)'>
+                    
+                    <label style='margin:0;white-space:nowrap;'>wIndex Lo</label>
+                    <label class='toggle-switch'><input type='checkbox' id='bf_wIndexLo' onchange='toggleBFField("wIndexLo")'><span class='toggle-slider'></span></label>
+                    <input type='text' id='bf_wIndexLo_start' value='0x00' placeholder='Value' oninput='validateHexInput(this)'>
+                    <input type='text' id='bf_wIndexLo_end' value='0xFF' placeholder='End' disabled style='background:#1a1a1a;' oninput='validateHexInput(this)'>
+                    <input type='text' id='bf_wIndexLo_exclude' placeholder='e.g., 0x00,0xFF' disabled style='font-size:11px;background:#1a1a1a;' oninput='validateHexInput(this)'>
+                    
+                    <label style='margin:0;white-space:nowrap;'>wLength</label>
+                    <label class='toggle-switch'><input type='checkbox' id='bf_wLength' onchange='toggleBFField("wLength")'><span class='toggle-slider'></span></label>
+                    <input type='text' id='bf_wLength_start' value='64' placeholder='Value'>
+                    <input type='text' id='bf_wLength_end' value='255' placeholder='End' disabled style='background:#1a1a1a;'>
+                    <input type='text' id='bf_wLength_exclude' placeholder='e.g., 0,18,64' disabled style='font-size:11px;background:#1a1a1a;'>
+                    
+                    <label style='margin:0;white-space:nowrap;'>Packet Size</label>
+                    <label class='toggle-switch'><input type='checkbox' id='bf_packetSize' onchange='toggleBFField("packetSize")'><span class='toggle-slider'></span></label>
+                    <input type='text' id='bf_packetSize_start' value='8' placeholder='Value'>
+                    <input type='text' id='bf_packetSize_end' value='256' placeholder='End' disabled style='background:#1a1a1a;'>
+                    <input type='text' id='bf_packetSize_exclude' placeholder='e.g., 1,2,3,4,5,6,7' disabled style='font-size:11px;background:#1a1a1a;'>
+                    
+                    <label style='margin:0;white-space:nowrap;'>Mode & Data</label>
+                    <label class='toggle-switch'><input type='checkbox' id='bf_dataBytes' onchange='toggleBFField("dataBytes")'><span class='toggle-slider'></span></label>
+                    <input type='text' id='bf_dataBytes_start' placeholder='Start hex' style='font-family:monospace;' oninput='validateHexInput(this); updateBFPacketSizeOnDataMode()'>
+                    <input type='text' id='bf_dataBytes_end' placeholder='End hex' disabled style='background:#1a1a1a;font-family:monospace;' oninput='validateHexInput(this)'>
+                    <div style='display:flex;border:1px solid #555;border-radius:6px;overflow:hidden;'>
+                        <div id='bf_dataMode_separate' onclick='selectBFDataMode("separate")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#ff4444;color:#fff;font-weight:bold;transition:all 0.2s;font-size:10px;'>DATA OUT</div>
+                        <div id='bf_dataMode_append' onclick='selectBFDataMode("append")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:10px;'>APPEND</div>
+                    </div>
+                    <input type='hidden' name='bf_dataMode' id='bf_dataMode' value='separate'>
+                </div>
+                <div class='control'>
+                    <label>Delay between requests (ms):</label>
+                    <input type='number' id='bf_delay' value='50' min='0' max='5000'>
+                </div>
+                <div style='display:flex;gap:10px;justify-content:center;margin-top:15px;'>
+                    <button onclick='startBruteforce()' id='bf_start' style='background:#28a745;margin:0;'>Execute Bruteforce</button>
+                    <button onclick='stopBruteforce()' id='bf_stop' style='background:#dc3545;margin:0;display:none;'>Stop</button>
+                </div>
+                <div id='bf_progress' style='margin-top:15px; color:#aaa; display:none;'></div>
+            </div>
+            <input type='file' id='bfFileInput' accept='.csv' style='display:none;' onchange='handleBruteforceFileImport(event)'>
+        </div>
+
+        <!-- Device Info Tab -->
+        <div class='tab-content' id='tab3'>
+            <div class='section'>
+                <div style='display:flex;justify-content:flex-end;gap:10px;margin-bottom:15px;'>
+                    <button onclick='exportDeviceInfoCSV()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Export CSV</button>
+                    <button onclick='clearDeviceInfo()' style='background:#dc3545;margin:0;padding:8px 12px;font-size:12px;'>Clear All</button>
+                </div>         
+                <!-- Device Descriptor -->
+                <div id='devDescSection' style='display:none;margin-bottom:20px;'>
+                    <h3 style='color:#ff4444;border-bottom:1px solid #444;padding-bottom:8px;margin-bottom:12px;'>Device Descriptor</h3>
+                    <div style='display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:10px;'>
+                        <div class='info-card'><span class='info-label'>USB Version</span><span class='info-value' id='info_usb_ver'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Vendor ID</span><span class='info-value' id='info_vid'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Product ID</span><span class='info-value' id='info_pid'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Device Version</span><span class='info-value' id='info_dev_ver'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Device Class</span><span class='info-value' id='info_class'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Subclass</span><span class='info-value' id='info_subclass'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Protocol</span><span class='info-value' id='info_protocol'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Max Packet Size (EP0)</span><span class='info-value' id='info_mps'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Num Configurations</span><span class='info-value' id='info_num_cfg'>-</span></div>
+                    </div>
+                </div>
+                
+                <!-- String Descriptors -->
+                <div id='strDescSection' style='display:none;margin-bottom:20px;'>
+                    <h3 style='color:#ff4444;border-bottom:1px solid #444;padding-bottom:8px;margin-bottom:12px;'>String Descriptors</h3>
+                    <div style='display:grid;grid-template-columns:1fr;gap:10px;'>
+                        <div class='info-card'><span class='info-label'>Manufacturer</span><span class='info-value' id='info_manufacturer'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Product</span><span class='info-value' id='info_product'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Serial Number</span><span class='info-value' id='info_serial'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Supported Languages</span><span class='info-value' id='info_langs'>-</span></div>
+                    </div>
+                </div>
+                
+                <!-- Configuration Descriptor -->
+                <div id='cfgDescSection' style='display:none;margin-bottom:20px;'>
+                    <h3 style='color:#ff4444;border-bottom:1px solid #444;padding-bottom:8px;margin-bottom:12px;'>Configuration Descriptor</h3>
+                    <div style='display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:10px;'>
+                        <div class='info-card'><span class='info-label'>Total Length</span><span class='info-value' id='info_cfg_len'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Num Interfaces</span><span class='info-value' id='info_num_if'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Config Value</span><span class='info-value' id='info_cfg_val'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Attributes</span><span class='info-value' id='info_cfg_attr'>-</span></div>
+                        <div class='info-card'><span class='info-label'>Max Power</span><span class='info-value' id='info_max_pwr'>-</span></div>
+                    </div>
+                    <div id='interfacesSection' style='margin-top:15px;'></div>
+                </div>
+                
+                <!-- Raw Data -->
+                <div id='rawDescSection' style='display:none;'>
+                    <h3 style='color:#ff4444;border-bottom:1px solid #444;padding-bottom:8px;margin-bottom:12px;'>Raw Descriptor Data</h3>
+                    <div style='background:#1a1a1a;padding:12px;border-radius:4px;font-family:monospace;font-size:11px;max-height:200px;overflow-y:auto;'>
+                        <div id='rawDevDesc' style='margin-bottom:10px;'></div>
+                        <div id='rawCfgDesc' style='margin-bottom:10px;'></div>
+                        <div id='rawStrDesc'></div>
+                    </div>
+                </div>
+                <div style='display:flex;gap:10px;justify-content:center;margin-top:15px;'>
+                    <button onclick='fetchDeviceInfo()' id='fetchInfoBtn' style='background:#28a745;margin:0;'>Fetch Device Info</button>
+                </div>
+                <div id='deviceInfoStatus' style='margin-top:10px;text-align:center;color:#888;'></div>
+            </div>
+            <style>
+                .info-card {
+                    background: #333;
+                    padding: 12px;
+                    border-radius: 6px;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                }
+                .info-label {
+                    color: #888;
+                    font-size: 12px;
+                }
+                .info-value {
+                    color: #4fc3f7;
+                    font-family: monospace;
+                    font-weight: bold;
+                }
+                .interface-card {
+                    background: #252525;
+                    border: 1px solid #444;
+                    border-radius: 6px;
+                    padding: 12px;
+                    margin-bottom: 10px;
+                }
+                .interface-card h4 {
+                    color: #81c784;
+                    margin: 0 0 10px 0;
+                    font-size: 14px;
+                }
+                .endpoint-item {
+                    background: #333;
+                    padding: 8px 12px;
+                    border-radius: 4px;
+                    margin-top: 8px;
+                    font-size: 11px;
+                    font-family: monospace;
+                }
+            </style>
+        </div>
+
+        <!-- Configuration Tab -->
+        <div class='tab-content' id='tab4'>
+            <div class='section'>
+                <div style='display:flex;justify-content:flex-end;gap:10px;margin-bottom:15px;'>
+                    <input type='file' id='configFile' accept='.csv' style='display:none;' onchange='handleConfigFileImport(event)'>
+                    <button onclick='document.getElementById("configFile").click()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Import CSV</button>
+                    <button onclick='exportConfigCSV()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Export CSV</button>
+                    <button onclick='clearConfig()' style='background:#dc3545;margin:0;padding:8px 12px;font-size:12px;'>Clear All</button>
+                </div>
+                <!-- USB PHY Configuration -->
+                <div style='background:#252525;padding:12px;border-radius:6px;margin-bottom:10px;border:1px solid #444;'>
+                    <h3 style='margin:0 0 15px 0;color:#ff4444;font-size:16px;'>USB PHY Configuration</h3>
+                    <div style='display:grid;grid-template-columns:1fr 1fr;gap:15px;'>
+                        <div class='control'>
+                            <label>USB Speed:</label>
+                            <div style='display:flex;border:1px solid #555;border-radius:6px;overflow:hidden;margin-bottom:10px;'>
+                                <div id='usb_speed_full' onclick='selectUsbSpeed("full")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#ff4444;color:#fff;font-weight:bold;transition:all 0.2s;'>Full-Speed (12 Mbps)</div>
+                                <div id='usb_speed_low' onclick='selectUsbSpeed("low")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;'>Low-Speed (1.5 Mbps)</div>
+                            </div>
+                            <small style='color:#888;'>USB PHY speed capability. Actual speed is negotiated with device.</small>
+                        </div>
+                        <div class='control'>
+                            <label>OTG Mode:</label>
+                            <div style='display:flex;border:1px solid #555;border-radius:6px;overflow:hidden;margin-bottom:10px;'>
+                                <div id='otg_mode_host' onclick='selectOtgMode("host")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#ff4444;color:#fff;font-weight:bold;transition:all 0.2s;'>Host</div>
+                                <div id='otg_mode_device' onclick='selectOtgMode("device")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;'>Device</div>
+                            </div>
+                            <small style='color:#888;'>USB OTG mode</small>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Transfer Settings -->
+                <div style='background:#252525;padding:12px;border-radius:6px;margin-bottom:10px;border:1px solid #444;'>
+                    <h3 style='margin:0 0 15px 0;color:#ff4444;font-size:16px;'>Transfer Settings</h3>
+                    <div style='display:grid;grid-template-columns:1fr 1fr;gap:15px;'>
+                        <div class='control'>
+                            <label>Default Max NAK Retries:</label>
+                            <input type='number' id='cfg_maxRetries' value='100' min='0' max='1000'>
+                            <small style='color:#888;'>Number of times to retry on NAK response</small>
+                        </div>
+                        <div class='control'>
+                            <label>Default Timeout (ms):</label>
+                            <input type='number' id='cfg_timeout' value='1000' min='100' max='10000'>
+                            <small style='color:#888;'>Response timeout in milliseconds</small>
+                        </div>
+                        <div class='control'>
+                            <label>Max Automatic Retries:</label>
+                            <input type='number' id='cfg_bfMaxRetries' value='3' min='0' max='10'>
+                            <small style='color:#888;'>Max retries per failed request (Bruteforce &amp; Chain modes)</small>
+                        </div>
+                        <div class='control'>
+                            <label>Retry Delay Increment (ms):</label>
+                            <input type='number' id='cfg_retryDelayIncrement' value='500' min='0' max='5000' step='100'>
+                            <small style='color:#888;'>Extra delay added per retry attempt (retry 1 = +1x, retry 2 = +2x, etc.)</small>
+                        </div>
+                        <div class='control'>
+                            <label>USB Reset on Retry:</label>
+                            <label class='toggle-switch' style='vertical-align:middle;margin-left:10px;'><input type='checkbox' id='cfg_resetOnRetry' checked onchange='toggleResetAfterRetries()'><span class='toggle-slider'></span></label>
+                            <small style='color:#888;display:block;margin-top:5px;'>Send USB reset before retry attempts (Bruteforce &amp; Chain modes)</small>
+                        </div>
+                        <div class='control'>
+                            <label>Reset After N Retries:</label>
+                            <input type='number' id='cfg_resetAfterRetries' value='2' min='1' max='10'>
+                            <small style='color:#888;'>Number of failed retries before sending USB reset</small>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Device Parameters -->
+                <div style='background:#252525;padding:12px;border-radius:6px;margin-bottom:10px;border:1px solid #444;'>
+                    <h3 style='margin:0 0 15px 0;color:#ff4444;font-size:16px;'>Device Parameters</h3>
+                    <div style='display:grid;grid-template-columns:1fr 1fr;gap:15px;'>
+                        <div class='control'>
+                            <label>Device Address:</label>
+                            <input type='number' id='cfg_devAddr' value='0' min='0' max='127'>
+                            <small style='color:#888;'>USB device address (0 during enumeration)</small>
+                        </div>
+                        <div class='control'>
+                            <label>Endpoint:</label>
+                            <input type='number' id='cfg_endpoint' value='0' min='0' max='15'>
+                            <small style='color:#888;'>Target endpoint number (0 for control)</small>
+                        </div>
+                        <div class='control'>
+                            <label>Max Packet Size (EP0):</label>
+                            <select id='cfg_maxPacketSize'>
+                                <option value='8'>8 bytes</option>
+                                <option value='16'>16 bytes</option>
+                                <option value='32'>32 bytes</option>
+                                <option value='64' selected>64 bytes</option>
+                            </select>
+                            <small style='color:#888;'>Endpoint 0 max packet size</small>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- WiFi Configuration -->
+                <div style='background:#252525;padding:12px;border-radius:6px;margin-bottom:10px;border:1px solid #444;'>
+                    <h3 style='margin:0 0 15px 0;color:#ff4444;font-size:16px;'>WiFi Configuration</h3>
+                    <div class='control'>
+                        <label>WiFi Mode:</label>
+                        <div style='display:flex;border:1px solid #555;border-radius:6px;overflow:hidden;margin-bottom:10px;'>
+                            <div id='wifi_mode_ap' onclick='selectWifiMode("ap")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#ff4444;color:#fff;font-weight:bold;transition:all 0.2s;'>Access Point (Host)</div>
+                            <div id='wifi_mode_sta' onclick='selectWifiMode("sta")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;'>Client (Join Network)</div>
+                        </div>
+                        <small style='color:#888;'>AP mode: ESP32 creates its own network. Client mode: ESP32 connects to existing router.</small>
+                    </div>
+                    <div id='wifi_ap_config'>
+                        <div style='display:grid;grid-template-columns:1fr 1fr;gap:15px;'>
+                            <div class='control'>
+                                <label>AP SSID:</label>
+                                <input type='text' id='cfg_ap_ssid' value='USBane' placeholder='Network name'>
+                            </div>
+                            <div class='control'>
+                                <label>AP Password:</label>
+                                <input type='password' id='cfg_ap_password' value='usbane123' placeholder='Min 8 characters'>
+                            </div>
+                        </div>
+                    </div>
+                    <div id='wifi_sta_config' style='display:none;'>
+                        <div style='display:grid;grid-template-columns:1fr 1fr;gap:15px;'>
+                            <div class='control'>
+                                <label>SSID:</label>
+                                <input type='text' id='cfg_sta_ssid' placeholder='Your WiFi network name'>
+                            </div>
+                            <div class='control'>
+                                <label>Password:</label>
+                                <input type='password' id='cfg_sta_password' placeholder='Your WiFi password'>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Save Buttons -->
+                <div style='margin-top:20px;'>
+                    <div style='display:flex;gap:10px;justify-content:center;'>
+                        <button onclick='saveConfig()' style='background:#28a745;margin:0;'>Save Configuration</button>
+                        <button onclick='factoryReset()' style='background:#dc3545;margin:0;'>Factory Reset</button>
+                    </div>
+                    <div id='cfg_status' style='margin-top:10px;color:#28a745;display:none;text-align:center;'>Configuration saved!</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- FAQ Tab -->
+        <div class='tab-content' id='tab5'>
+            <div class='section'>
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>What is USBane?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        USBane is an ESP32-S3 based USB security research tool that allows you to send custom and malformed USB packets to target devices. It bypasses standard USB stack validation to enable low-level USB protocol testing and vulnerability research.
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>How does it work?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        USBane directly accesses the DWC2 USB controller hardware on the ESP32-S3, bypassing the ESP-IDF USB Host stack. This allows:
+                        <ul>
+                            <li>Sending packets with arbitrary lengths (truncated or oversized)</li>
+                            <li>Crafting custom SETUP packets with any values</li>
+                            <li>Sending malformed control transfers</li>
+                            <li>Testing how devices handle protocol violations</li>
+                        </ul>
+                        The dual-core architecture runs WiFi/HTTP on Core 0 and USB operations on Core 1 for reliable timing.
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>What are the USB request fields?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        <ul>
+                            <li><code>bmRequestType</code> - Direction (bit 7), Type (bits 5-6), Recipient (bits 0-4). Example: <code>0x80</code> = Device-to-Host, Standard, Device</li>
+                            <li><code>bRequest</code> - The request code. Example: <code>0x06</code> = GET_DESCRIPTOR</li>
+                            <li><code>wValue</code> - Request-specific value. For GET_DESCRIPTOR: high byte = descriptor type, low byte = index</li>
+                            <li><code>wIndex</code> - Request-specific index or offset</li>
+                            <li><code>wLength</code> - Maximum bytes to transfer</li>
+                            <li><code>Packet Size</code> - Actual bytes to send (can differ from wLength for malformed packets)</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>What is the difference between Single Request, Request Chain, and Bruteforce?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        <ul>
+                            <li><strong>Single Request:</strong> Send one USB request at a time. Good for manual testing and exploration.</li>
+                            <li><strong>Request Chain:</strong> Define a sequence of USB requests, wait conditions, and actions to execute in order. Supports waits (button press, webhook, GPIO, USB reset, delay) and actions (HTTP calls, GPIO output, comments). Useful for complex multi-step exploits or automated testing sequences.</li>
+                            <li><strong>Bruteforce:</strong> Automatically iterate through ranges of values for one or more fields. Great for fuzzing and discovering memory regions.</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>What are Request Chain wait types and actions?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        Request chains can include USB requests, wait conditions, and actions:
+                        <br><br>
+                        <strong>Wait Types (pause execution until condition is met):</strong>
+                        <ul>
+                            <li><strong>Button:</strong> Wait for user to press "Continue" button - useful for manual inspection between steps</li>
+                            <li><strong>Webhook:</strong> Wait for external HTTP trigger (GET /api/trigger?id=XXX) - enables remote control and synchronization</li>
+                            <li><strong>GPIO:</strong> Wait for GPIO pin to reach specified level (HIGH/LOW) - hardware event triggers</li>
+                            <li><strong>USB Reset:</strong> Perform USB bus reset and wait for completion - reinitializes device state</li>
+                            <li><strong>Delay:</strong> Fixed time delay in milliseconds - simple timing control</li>
+                        </ul>
+                        <strong>Actions (execute immediately without waiting):</strong>
+                        <ul>
+                            <li><strong>HTTP Call:</strong> Send HTTP GET request to external URL - trigger external systems or log events</li>
+                            <li><strong>GPIO Output:</strong> Set GPIO pin to HIGH or LOW - control external hardware or indicators</li>
+                            <li><strong>Comment:</strong> Visual marker in chain (does nothing) - organize and document complex chains</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>How do I read device descriptors?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        Use GET_DESCRIPTOR requests:
+                        <ul>
+                            <li><strong>Device Descriptor:</strong> <code>bmReqType=0x80, bReq=0x06, wValue=0x0100, wIndex=0x0000, wLen=18</code></li>
+                            <li><strong>Configuration Descriptor:</strong> <code>bmReqType=0x80, bReq=0x06, wValue=0x0200, wIndex=0x0000, wLen=255</code></li>
+                            <li><strong>String Descriptor:</strong> <code>bmReqType=0x80, bReq=0x06, wValue=0x03XX, wIndex=0x0409, wLen=255</code> (XX = string index)</li>
+                        </ul>
+                        Or simply use the <strong>Device Info</strong> tab which fetches these automatically.
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>What does "Data Out" do?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        When enabled, the data bytes you enter are sent TO the device (Host-to-Device transfer) after the SETUP packet. This is used for:
+                        <ul>
+                            <li>SET_DESCRIPTOR requests</li>
+                            <li>Vendor-specific commands that require data</li>
+                            <li>Testing how devices handle incoming data</li>
+                        </ul>
+                        When disabled, data is read FROM the device (Device-to-Host transfer).
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>What does "Append" do?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        Normally, a USB control transfer has a separate DATA stage after the 8-byte SETUP packet. When "Append to SETUP" is enabled, the extra data bytes are sent immediately after the SETUP packet in the same transaction, creating a malformed packet. This can trigger buffer overflows or parsing errors in vulnerable USB stacks.
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>How do I connect to WiFi?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        USBane supports two WiFi modes:
+                        <ul>
+                            <li><strong>Access Point (default):</strong> Connect to the "USBane" WiFi network (password: usbane123), then open http://192.168.4.1</li>
+                            <li><strong>Client Mode:</strong> In Configuration tab, switch to Client mode, enter your router's SSID and password, save and reboot. The device will connect to your network while keeping a fallback AP active.</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>How do I factory reset the device?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        The <strong>Factory Reset</strong> button in the Configuration tab wipes all stored settings:
+                        <ul>
+                            <li>Clears WiFi credentials (SSID, password)</li>
+                            <li>Resets USB PHY configuration</li>
+                            <li>Restores all settings to defaults</li>
+                            <li>Automatically reboots the device</li>
+                        </ul>
+                        After factory reset, the device will boot in Access Point mode with default credentials (SSID: USBane, password: usbane123).
+                        <br><br>
+                        <strong>Note:</strong> This only affects configuration stored in NVS (non-volatile storage). It does not reflash the firmware.
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>How does the update check work?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        When connected in Client Mode (with internet access), USBane automatically checks for updates:
+                        <ul>
+                            <li>Checks GitHub releases for newer versions on page load</li>
+                            <li>Displays version number in header (e.g., "v1.0.0")</li>
+                            <li>Shows <strong>green checkmark</strong> if up to date</li>
+                            <li>Shows <strong>orange warning</strong> "Update Available!" if newer version exists - click to open releases page</li>
+                            <li>Shows <strong>red "!"</strong> if check failed (no internet or GitHub unreachable)</li>
+                        </ul>
+                        <strong>Note:</strong> Update check only works in Client Mode with internet access. In AP-only mode, the version is displayed without checking.
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>Why do requests sometimes fail?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        Common reasons for failed requests:
+                        <ul>
+                            <li><strong>No device connected:</strong> Check the connection status indicator</li>
+                            <li><strong>Device NAK:</strong> Device is busy, try increasing retries</li>
+                            <li><strong>Timeout:</strong> Device didn't respond, may need USB Reset</li>
+                            <li><strong>STALL:</strong> Device rejected the request (invalid request for this device)</li>
+                            <li><strong>Device address wrong:</strong> After enumeration, device address changes from 0</li>
+                        </ul>
+                        Try clicking "USB Reset" to reinitialize the connection.
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>How does automatic retry work?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        When a request fails during <strong>Bruteforce</strong> or <strong>Request Chain</strong> execution, the retry system kicks in:
+                        <ul>
+                            <li><strong>Retry 1:</strong> Waits <code>delay + (1 x increment)</code>, resends same request</li>
+                            <li><strong>Retry 2:</strong> Waits <code>delay + (2 x increment)</code>, resends same request</li>
+                            <li><strong>Retry N (if USB Reset enabled):</strong> After configured threshold, sends USB Reset first, then retries</li>
+                            <li><strong>Max retries reached:</strong> Marks request as FAILED, moves to next request</li>
+                        </ul>
+                        <strong>Applies to:</strong>
+                        <ul>
+                            <li><strong>Bruteforce tab:</strong> Each generated request is retried on failure</li>
+                            <li><strong>Request Chain tab:</strong> Each chain request is retried on failure</li>
+                            <li><strong>Single Request tab:</strong> No automatic retry (manual control)</li>
+                        </ul>
+                        <strong>Configurable in Configuration tab:</strong>
+                        <ul>
+                            <li><strong>Max Automatic Retries:</strong> How many times to retry before giving up (default: 3)</li>
+                            <li><strong>Retry Delay Increment:</strong> Extra milliseconds added per retry (default: 500ms)</li>
+                            <li><strong>USB Reset on Retry:</strong> Whether to send USB bus reset during retries</li>
+                            <li><strong>Reset After N Retries:</strong> How many failures before triggering USB Reset (default: 2, only active if USB Reset on Retry is enabled)</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>What does USB Reset do?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        USB Reset sends a hardware reset signal on the USB bus:
+                        <ul>
+                            <li><strong>1. Assert RESET (15ms):</strong> Signals device to reset its USB state</li>
+                            <li><strong>2. Speed negotiation:</strong> Device chirps its speed (Full/Low)</li>
+                            <li><strong>3. Re-initialize channel:</strong> Clears buffers and pending transfers</li>
+                            <li><strong>4. Device returns to address 0:</strong> Device is now unconfigured</li>
+                        </ul>
+                        <strong>When to use:</strong>
+                        <ul>
+                            <li>Device stuck in NAK (busy) state</li>
+                            <li>Communication sync issues</li>
+                            <li>After changing device address settings</li>
+                            <li>When requests consistently timeout</li>
+                        </ul>
+                        <strong>Note:</strong> After USB Reset, the device address resets to 0. If you were using a different address, you'll need to re-enumerate the device.
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>What hardware do I need?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        <ul>
+                            <li><strong>ESP32-S3 board</strong> with USB OTG support (e.g., ESP32-S3-DevKitC)</li>
+                            <li><strong>USB OTG cable/adapter</strong> to connect target device</li>
+                            <li><strong>Target USB device</strong> to test</li>
+                        </ul>
+                        The ESP32-S3's USB port must be connected to your target device in Host mode. The other USB port can be used for serial debugging.
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>How do Conditions work in Request Chains?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        Conditions allow you to dynamically control request chain execution based on USB response data. You can compare response bytes from previous requests and take actions based on the result.
+                        <br><br>
+                        <strong>Value Sources:</strong>
+                        <ul>
+                            <li><strong>RxBytes:</strong> Number of bytes received from the device</li>
+                            <li><strong>Response Hex:</strong> Actual hex data received from the device</li>
+                            <li><strong>Manual Hex:</strong> Enter a fixed hex value to compare against</li>
+                        </ul>
+                        <strong>Request Number (ReqNo):</strong>
+                        <ul>
+                            <li><strong>-1</strong> = Last request in table</li>
+                            <li><strong>-2</strong> = Second to last request (current - 2)</li>
+                            <li><strong>-3, -4, etc.</strong> = Further back in history</li>
+                            <li><strong>Positive numbers</strong> = Specific row number (e.g., #5 = row 5)</li>
+                        </ul>
+                        <strong>Length (bytes):</strong>
+                        <ul>
+                            <li><strong>-1</strong> = Compare ALL bytes from response</li>
+                            <li><strong>1, 2, 3, etc.</strong> = Compare only first N bytes</li>
+                        </ul>
+                        <strong>Comparison Operators:</strong>
+                        <ul>
+                            <li><strong>==</strong> - Equals (exact match)</li>
+                            <li><strong>!=</strong> - Not equals</li>
+                            <li><strong><</strong> - Less than (numeric comparison in hex)</li>
+                            <li><strong><=</strong> - Less than or equals</li>
+                            <li><strong>></strong> - Greater than</li>
+                            <li><strong>>=</strong> - Greater than or equals</li>
+                            <li><strong>contains</strong> - Check if Value A contains Value B as substring</li>
+                        </ul>
+                        <strong>Then Actions:</strong>
+                        <ul>
+                            <li><strong>continue</strong> - Proceed to next step (does nothing special)</li>
+                            <li><strong>skip next</strong> - Skip the next step if condition is TRUE</li>
+                            <li><strong>break</strong> - Stop chain execution immediately if condition is TRUE</li>
+                        </ul>
+                        <strong>Example Use Cases:</strong>
+                        <ul>
+                            <li>Check if last response starts with <code>9D</code>: <code>Reqlast[2B] == 9D</code></li>
+                            <li>Skip next request if device returned <code>12</code> bytes: <code>RxBytes == 0C -> skip next</code></li>
+                            <li>Compare response from request #5 to fixed value: <code>Req#5[all] == DEADBEEF</code></li>
+                            <li>Check if previous response contains specific bytes: <code>Reqlast-1[all] contains FF00</code></li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class='accordion'>
+                    <div class='accordion-header' onclick='toggleAccordion(this)'>
+                        <span class='accordion-title'>Who deserves credits?</span>
+                        <span class='accordion-icon'>+</span>
+                    </div>
+                    <div class='accordion-content'>
+                        <strong>solderless</strong>
+                        <ul>
+                            <li><a href='https://x.com/pod2g' target='_blank' style='color:#ff6b6b;'>pod2g</a> - for driving us nuts to dig deep into USB</li>
+                            <li><a href='https://x.com/ericlewisplease' target='_blank' style='color:#ff6b6b;'>ericlewis</a></li>
+                            <li><a href='https://github.com/JoseJX' target='_blank' style='color:#ff6b6b;'>JoseJX</a></li>
+                            <li><a href='https://github.com/tuxuser' target='_blank' style='color:#ff6b6b;'>tuxuser</a></li>
+                            <li><a href='https://github.com/reminon' target='_blank' style='color:#ff6b6b;'>reminon</a></li>
+                        </ul>
+                        <strong>Great Scott Gadgets</strong>
+                        <ul>
+                            <li><strong>GreatFET One</strong> - for making us wait for Cynthion</li>
+                            <li><strong>Cynthion</strong> - for making us realize we need to build our own tools</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Results Table -->
+        <div class='section'>
+            <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;'>
+                <h2 style='margin:0;'>Results</h2>
+                <button onclick='clearTable()' style='background:#dc3545;margin:0;padding:8px 12px;font-size:12px;'>Clear Table</button>
+            </div>
+            <!-- Filter Controls -->
+            <div style='display:flex;gap:10px;align-items:center;margin-bottom:10px;padding:10px;background:#252525;border-radius:4px;border:1px solid #444;flex-wrap:wrap;'>
+                <label style='display:inline;margin:0;font-size:12px;'>Min bytes:</label>
+                <input type='number' id='filter_minBytes' style='width:50px;padding:4px;' value='0' oninput='applyFilters()'>
+                <span style='color:#555;'>|</span>
+                <label style='display:inline;margin:0;font-size:12px;'>Hide FAILED</label>
+                <label class='toggle-switch' style='vertical-align:middle;'><input type='checkbox' id='filter_hideFailed' onchange='applyFilters()'><span class='toggle-slider'></span></label>
+                <span style='color:#555;'>|</span>
+                <div style='display:flex;border:1px solid #555;border-radius:4px;overflow:hidden;'>
+                    <div id='filter_mode_include' onclick='selectFilterMode("include")' style='padding:4px 8px;text-align:center;cursor:pointer;background:#ff4444;color:#fff;font-weight:bold;transition:all 0.2s;font-size:11px;'>Include</div>
+                    <div id='filter_mode_exclude' onclick='selectFilterMode("exclude")' style='padding:4px 8px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:11px;'>Exclude</div>
+                </div>
+                <input type='text' id='filter_contains' style='width:100px;padding:4px;' placeholder='hex e.g. 9D00' oninput='applyFilters()'>
+                <input type='hidden' id='filter_mode' value='include'>
+                <button onclick='resetFilters()' style='background:#6c757d;padding:4px 8px;font-size:11px;margin:0;'>Reset</button>
+                <span style='color:#555;'>|</span>
+                <label style='display:inline;margin:0;font-size:12px;'>Export:</label>
+                <button onclick='exportResults("csv")' style='background:#17a2b8;padding:4px 8px;font-size:11px;margin:0;'>CSV</button>
+                <button onclick='exportResults("hex")' style='background:#17a2b8;padding:4px 8px;font-size:11px;margin:0;'>HEX</button>
+                <button onclick='exportResults("bin")' style='background:#17a2b8;padding:4px 8px;font-size:11px;margin:0;'>BIN</button>
+                <span id='filter_stats' style='color:#888;font-size:11px;margin-left:auto;'></span>
+            </div>
+            <div style='max-height:500px; overflow-y:auto; background:#1a1a1a; border:1px solid #555; border-radius:4px;'>
+                <table style='width:100%; border-collapse:collapse; font-size:11px; font-family:monospace;'>
+                    <thead style='background:#333; position:sticky; top:0;'>
+                        <tr>
+                            <th onclick='sortTable(0)' style='padding:8px; border:1px solid #555; cursor:pointer; user-select:none;'># <span id='sort_0'></span></th>
+                            <th style='padding:8px; border:1px solid #555;'>bmReqType</th>
+                            <th style='padding:8px; border:1px solid #555;'>bReq</th>
+                            <th style='padding:8px; border:1px solid #555;'>wValue</th>
+                            <th style='padding:8px; border:1px solid #555;'>wIndex</th>
+                            <th style='padding:8px; border:1px solid #555;'>wLen</th>
+                            <th onclick='sortTable(6)' style='padding:8px; border:1px solid #555; cursor:pointer; user-select:none;'>PktSize <span id='sort_6'></span></th>
+                            <th onclick='sortTable(7)' style='padding:8px; border:1px solid #555; cursor:pointer; user-select:none;'>RxBytes <span id='sort_7'></span></th>
+                            <th style='padding:8px; border:1px solid #555;'>Response (Hex)</th>
+                            <th style='padding:8px; border:1px solid #555;'>ASCII</th>
+                        </tr>
+                    </thead>
+                    <tbody id='results_table'></tbody>
+                </table>
+            </div>
+        </div>
+
+        <footer style='margin-top:30px;padding:20px 0;border-top:1px solid #333;text-align:center;display:flex;align-items:center;justify-content:center;gap:12px;'>
+            <span style='color:#666;font-size:12px;'>Made with care by</span>
+            <a href='https://fe.hr' target='_blank' style='display:inline-flex;align-items:center;'><img src='/logo.svg' alt='FEHR' style='height:18px;filter:brightness(0) invert(1);opacity:0.7;transition:opacity 0.2s;' onmouseover='this.style.opacity=1' onmouseout='this.style.opacity=0.7'></a>
+            <span style='color:#444;font-size:11px;'>|</span>
+            <span style='color:#555;font-size:11px;'>USBane - USB Security Research Tool</span>
+        </footer>
+    </div>
+
+    <script src='/app.js'></script>
+</body>
+</html>
+
