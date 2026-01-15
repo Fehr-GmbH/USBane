@@ -44,20 +44,20 @@ jobs:
     - name: Create merged binary
       run: |
         pip install esptool
-        chmod -R u+w build/
-        python -m esptool --chip esp32s3 merge-bin -o build/usbane-full.bin \
+        python -m esptool --chip esp32s3 merge-bin -o usbane-full.bin \
           --flash-mode dio --flash-size 8MB --flash-freq 80m \
           0x0 build/bootloader/bootloader.bin \
           0x8000 build/partition_table/partition-table.bin \
           0xf000 build/ota_data_initial.bin \
           0x20000 build/usbane.bin
-        echo "Created merged binary: build/usbane-full.bin"
+        echo "Created merged binary: usbane-full.bin"
+        ls -la usbane-full.bin
 
     - name: Upload firmware artifact
       uses: actions/upload-artifact@v4
       with:
         name: usbane-firmware-${{ steps.version.outputs.version }}
-        path: build/usbane-full.bin
+        path: usbane-full.bin
         retention-days: 30
 
     - name: Create Release
@@ -77,7 +77,7 @@ jobs:
           
           ### What's New
           See commit history for changes.
-        files: build/usbane-full.bin
+        files: usbane-full.bin
         draft: false
         prerelease: false
       env:
