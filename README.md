@@ -31,11 +31,16 @@ USBane is an open-source USB security research framework that enables direct har
 - **REST API with OpenAPI Documentation** - Full API documentation with Swagger UI for scripting and automation
 - **Dual-Core Architecture** - Core 0 handles WiFi/HTTP, Core 1 handles USB operations
 - **Malformed Packet Support** - Send truncated, oversized, or custom USB packets
+- **Bulk/Interrupt Endpoint Transfers** - Read/write any endpoint (EP1-15) with:
+  - **Configurable Host Channel** - Use separate USB channels (0-15) for parallel operations
+  - **Continuous Read Mode** - Polling reads with configurable max attempts
+  - **Bulk and Interrupt Types** - Full support for non-control transfers
 - **Advanced Request Chains** - Powerful automation with:
   - **Wait Conditions**: Button prompts, webhooks, GPIO triggers, USB resets, delays
   - **Actions**: HTTP calls, GPIO control, comments, dynamic data copying, GOTO jumps
   - **Conditionals**: Compare responses with operators (==, !=, <, >, <=, >=, contains), skip steps or break execution
   - **Dynamic Data**: Copy response bytes between requests, reference previous results
+  - **Endpoint Transfers**: Chain bulk/interrupt IN/OUT operations alongside control transfers
 - **Bruteforce Mode** - Iterate through parameter ranges with exclude lists and retry logic
 - **Device Info** - Automatic USB descriptor parsing and display
 - **Import/Export** - CSV support for sharing configurations and request chains
@@ -87,12 +92,23 @@ idf.py monitor
 
 | Tab | Description |
 |-----|-------------|
-| Single Request | Send individual USB control transfers with custom data |
+| Single Request | Send USB control transfers (EP0) and bulk/interrupt transfers (EP1-15) |
 | Request Chain | Execute automated sequences with wait conditions, actions, and flow control |
 | Bruteforce | Iterate through parameter ranges with filtering and retry logic |
 | Device Info | View and parse USB device, configuration, and string descriptors |
 | Configuration | WiFi modes, USB PHY settings, retry behavior, factory reset |
 | FAQ | Comprehensive usage documentation and examples |
+
+### Single Request Tab
+
+The Single Request tab provides two transfer modes:
+
+- **Control Transfer (EP0)** - Standard SETUP packets with custom bmRequestType, bRequest, wValue, wIndex, wLength
+- **Bulk/Interrupt Transfer (EP1-15)** - Direct endpoint access with:
+  - Direction: IN (read) / OUT (write)
+  - Type: Bulk or Interrupt
+  - Configurable endpoint, device address, host channel
+  - Continuous mode with max attempts for polling reads
 
 Access the main interface at: `http://192.168.4.1/` (default AP mode)
 
@@ -108,8 +124,17 @@ The REST API enables:
 
 Example API usage:
 ```bash
-# Send a USB control request
+# Send a USB control request (EP0)
 curl -X POST "http://192.168.4.1/api/send_request?bmRequestType=0x80&bRequest=0x06&wValue=0x0100&wIndex=0x00&wLength=18"
+
+# Bulk/Interrupt IN from endpoint 10
+curl "http://192.168.4.1/api/endpoint_in?ep=10&addr=0&len=64&timeout=1000&type=bulk"
+
+# Continuous read with max 10 attempts
+curl "http://192.168.4.1/api/endpoint_in?ep=10&addr=0&len=64&timeout=500&continuous=1&max_attempts=10"
+
+# Bulk/Interrupt OUT to endpoint 1
+curl -X POST "http://192.168.4.1/api/endpoint_out?ep=1&addr=0&data=DEADBEEF&type=bulk"
 
 # Get device status
 curl "http://192.168.4.1/api/status"
@@ -147,6 +172,7 @@ Request chains enable complex automation scenarios with powerful flow control:
 - **Comment** - Add documentation to chain execution
 - **Copy** - Extract data from responses and inject into subsequent requests
 - **GoTo** - Jump to specific chain index for loops
+- **Endpoint IN/OUT** - Bulk/interrupt transfers to any endpoint (EP1-15)
 
 ### Conditionals
 - **Operators**: `==`, `!=`, `<`, `>`, `<=`, `>=`, `contains`
