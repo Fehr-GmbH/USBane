@@ -271,11 +271,15 @@
 
         <!-- Single Request Tab -->
         <div class='tab-content active' id='tab0'>
-            <div class='section'>
-                <div style='display:flex;justify-content:flex-end;gap:10px;margin-bottom:15px;'>
-                    <button onclick='importSingleRequestCSV()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Import CSV</button>
-                    <button onclick='exportSingleRequestCSV()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Export CSV</button>
-                    <button onclick='clearSingleRequest()' style='background:#dc3545;margin:0;padding:8px 12px;font-size:12px;'>Clear All</button>
+            <!-- Control Transfers Section (EP0) -->
+            <div class='section' style='border-left:3px solid #ff4444;'>
+                <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;'>
+                    <h3 style='margin:0;color:#ff4444;font-size:14px;'>Control Transfer <span style='color:#888;font-size:11px;font-weight:normal;'>(EP0 - SETUP packets)</span></h3>
+                    <div style='display:flex;gap:10px;'>
+                        <button onclick='importSingleRequestCSV()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Import CSV</button>
+                        <button onclick='exportSingleRequestCSV()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Export CSV</button>
+                        <button onclick='clearSingleRequest()' style='background:#dc3545;margin:0;padding:8px 12px;font-size:12px;'>Clear All</button>
+                    </div>
                 </div>
                 <div style='display:grid;grid-template-columns:auto 1fr 2fr;gap:10px;align-items:center;'>
                     <span style='color:#888;font-size:11px;'>Field</span>
@@ -391,6 +395,94 @@
                     <button onclick='addToChain()' style='background:#17a2b8;margin:0;'>Add to Chain</button>
                 </div>
             </div>
+            
+            <!-- Bulk/Interrupt Transfers Section (EP1-15) -->
+            <div class='section' style='border-left:3px solid #17a2b8;'>
+                <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;'>
+                    <h3 style='margin:0;color:#17a2b8;font-size:14px;'>Bulk / Interrupt Transfer <span style='color:#888;font-size:11px;font-weight:normal;'>(EP1-15 - Data endpoints)</span></h3>
+                </div>
+                <div style='display:grid;grid-template-columns:auto 1fr 2fr;gap:10px;align-items:center;'>
+                    <label style='margin:0;white-space:nowrap;'>Direction</label>
+                    <div style='display:flex;border:1px solid #555;border-radius:6px;overflow:hidden;'>
+                        <div id='ep_dir_in' onclick='selectEpDirection("in")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#17a2b8;color:#fff;font-weight:bold;transition:all 0.2s;font-size:10px;'>IN (Read)</div>
+                        <div id='ep_dir_out' onclick='selectEpDirection("out")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:10px;'>OUT (Write)</div>
+                    </div>
+                    <div style='display:flex;border:1px solid #555;border-radius:6px;overflow:hidden;'>
+                        <div id='ep_type_bulk' onclick='selectEpType("bulk")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#17a2b8;color:#fff;font-weight:bold;transition:all 0.2s;font-size:10px;'>BULK</div>
+                        <div id='ep_type_interrupt' onclick='selectEpType("interrupt")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:10px;'>INTERRUPT</div>
+                    </div>
+                    
+                    <label style='margin:0;white-space:nowrap;'>Endpoint</label>
+                    <input type='number' id='ep_endpoint' value='1' min='1' max='15'>
+                    <select onchange='document.getElementById("ep_endpoint").value=this.value' style='font-size:11px;'>
+                        <option value=''>Quick Select...</option>
+                        <option value='1'>EP1 - Common data endpoint</option>
+                        <option value='2'>EP2 - Secondary data</option>
+                        <option value='3'>EP3 - Tertiary data</option>
+                        <option value='10'>EP10 - Exploit target</option>
+                    </select>
+
+                    <label style='margin:0;white-space:nowrap;'>Device Addr</label>
+                    <input type='number' id='ep_device_addr' value='0' min='0' max='127'>
+                    <select onchange='document.getElementById("ep_device_addr").value=this.value' style='font-size:11px;'>
+                        <option value=''>Quick Select...</option>
+                        <option value='0'>0 - Default/Enumeration</option>
+                        <option value='1'>1 - First assigned</option>
+                        <option value='2'>2 - Second assigned</option>
+                    </select>
+
+                    <label style='margin:0;white-space:nowrap;'>Channel</label>
+                    <input type='number' id='ep_channel' value='1' min='0' max='15'>
+                    <select onchange='document.getElementById("ep_channel").value=this.value' style='font-size:11px;'>
+                        <option value=''>Quick Select...</option>
+                        <option value='0'>0 - Control transfers</option>
+                        <option value='1'>1 - Data transfers</option>
+                        <option value='2'>2 - Alternative</option>
+                    </select>
+
+                    <label style='margin:0;white-space:nowrap;'>Attempts</label>
+                    <input type='number' id='ep_max_attempts' value='10' min='-1' max='1000' title='Max attempts (-1 for continuous)'>
+                    <select onchange='document.getElementById("ep_max_attempts").value=this.value' style='font-size:11px;'>
+                        <option value=''>Quick Select...</option>
+                        <option value='10'>10 attempts</option>
+                        <option value='50'>50 attempts</option>
+                        <option value='100'>100 attempts</option>
+                        <option value='-1'>Continuous</option>
+                    </select>
+
+                    <label style='margin:0;white-space:nowrap;' id='ep_length_label'>Length</label>
+                    <input type='number' id='ep_length' value='64' min='1' max='4096'>
+                    <select onchange='document.getElementById("ep_length").value=this.value' style='font-size:11px;'>
+                        <option value=''>Quick Select...</option>
+                        <option value='8'>8 bytes</option>
+                        <option value='32'>32 bytes</option>
+                        <option value='64'>64 bytes (standard)</option>
+                        <option value='128'>128 bytes</option>
+                        <option value='256'>256 bytes</option>
+                        <option value='512'>512 bytes</option>
+                        <option value='1024'>1024 bytes</option>
+                    </select>
+
+                    <label style='margin:0;white-space:nowrap;'>Timeout</label>
+                    <input type='number' id='ep_timeout' value='1000' min='100' max='30000'>
+                    <select onchange='document.getElementById("ep_timeout").value=this.value' style='font-size:11px;'>
+                        <option value=''>Quick Select...</option>
+                        <option value='100'>100ms - Fast</option>
+                        <option value='500'>500ms</option>
+                        <option value='1000'>1000ms - Default</option>
+                        <option value='3000'>3000ms - Slow device</option>
+                        <option value='10000'>10000ms - Very slow</option>
+                    </select>
+                    
+                    <label style='margin:0;white-space:nowrap;' id='ep_data_label'>Data (hex)</label>
+                    <input type='text' id='ep_data_out' placeholder='Only for OUT transfers' style='font-family:monospace;' oninput='validateHexInput(this)'>
+                    <small style='color:#666;'>Enter hex bytes for OUT transfers (e.g., DEADBEEF)</small>
+                </div>
+                <div style='display:flex;gap:10px;justify-content:center;margin-top:15px;'>
+                    <button onclick='sendEndpointRequest()' id='sendEpBtn' style='background:#17a2b8;margin:0;'>Execute Endpoint Transfer</button>
+                    <button onclick='addEndpointToChain()' style='background:#6c757d;margin:0;'>Add to Chain</button>
+                </div>
+            </div>
             <input type='file' id='singleReqFileInput' accept='.csv' style='display:none;' onchange='handleSingleRequestFileImport(event)'>
         </div>
 
@@ -406,7 +498,7 @@
                 <!-- Quick Add Request -->
                 <div style='background:#252525;padding:12px;border-radius:6px;margin-bottom:10px;border:1px solid #444;'>
                     <div style='display:flex;gap:8px;align-items:flex-end;'>
-                        <div style='flex:1;display:grid;grid-template-columns:repeat(7, 1fr) 2fr;gap:8px;'>
+                        <div style='flex:1;display:grid;grid-template-columns:repeat(7, 1fr) auto 2fr;gap:8px;'>
                             <div>
                                 <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>bmReqType</label>
                                 <input type='text' id='chain_quick_bmRequestType' value='0x80' placeholder='0x80' style='padding:6px;font-size:11px;width:100%;' oninput='validateHexInput(this)'>
@@ -439,10 +531,18 @@
                                 </div>
                             </div>
                             <div>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Retry</label>
+                                <div style='display:flex;border:1px solid #555;border-radius:4px;overflow:hidden;'>
+                                    <div id='chain_quick_retry_yes' onclick='selectChainQuickRetry(true)' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#28a745;color:#fff;font-weight:bold;transition:all 0.2s;font-size:9px;'>YES</div>
+                                    <div id='chain_quick_retry_no' onclick='selectChainQuickRetry(false)' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;font-size:9px;'>NO</div>
+                                </div>
+                            </div>
+                            <div>
                                 <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Data (hex)</label>
                                 <input type='text' id='chain_quick_data' placeholder='Optional' style='padding:6px;font-size:11px;font-family:monospace;width:100%;' oninput='validateHexInput(this)'>
                             </div>
                         </div>
+                        <input type='hidden' id='chain_quick_retry' value='true'>
                         <button onclick='addQuickChainRequest()' style='background:#17a2b8;margin:0;padding:8px 16px;font-size:11px;white-space:nowrap;height:29px;width:120px;'>+ Add Request</button>
                         <input type='hidden' id='chain_quick_dataMode' value='separate'>
                     </div>

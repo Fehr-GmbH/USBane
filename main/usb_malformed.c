@@ -51,8 +51,23 @@ typedef enum {
     USB_OP_SEND_PACKET,
     USB_OP_GET_STATUS,
     USB_OP_GET_DEVICE_INFO,
-    USB_OP_CLEAR_CACHE
+    USB_OP_CLEAR_CACHE,
+    USB_OP_ENDPOINT_IN,
+    USB_OP_ENDPOINT_OUT
 } usb_op_type_t;
+
+// Endpoint transfer parameters (for USB_OP_ENDPOINT_IN/OUT)
+typedef struct {
+    uint8_t endpoint;
+    uint8_t device_addr;
+    usb_endpoint_type_t ep_type;
+    uint8_t channel;  // USB host channel (0-15)
+    uint8_t *buffer;
+    const uint8_t *data;
+    size_t length;
+    uint32_t timeout_ms;
+    size_t *bytes_transferred;
+} usb_endpoint_params_t;
 
 // Pending operation structure
 typedef struct {
@@ -143,6 +158,8 @@ static esp_err_t usb_send_reset_impl(void);
 static esp_err_t usb_send_packet_impl(const usb_packet_config_t *config);
 static bool usb_is_device_connected_impl(void);
 static esp_err_t usb_get_device_info_impl(usb_device_info_t *info);
+static esp_err_t usb_endpoint_in_impl(const usb_endpoint_params_t *params);
+static esp_err_t usb_endpoint_out_impl(const usb_endpoint_params_t *params);
 
 // ============================================================================
 // USB Worker Task (runs on Core 1)
@@ -190,6 +207,14 @@ static void usb_worker_task(void *arg) {
                 case USB_OP_CLEAR_CACHE:
                     memset(&cached_device_info, 0, sizeof(usb_device_info_t));
                     pending_op.result = ESP_OK;
+                    break;
+                    
+                case USB_OP_ENDPOINT_IN:
+                    pending_op.result = usb_endpoint_in_impl((const usb_endpoint_params_t *)pending_op.arg1);
+                    break;
+                    
+                case USB_OP_ENDPOINT_OUT:
+                    pending_op.result = usb_endpoint_out_impl((const usb_endpoint_params_t *)pending_op.arg1);
                     break;
                     
                 default:
@@ -358,6 +383,81 @@ esp_err_t usb_get_device_info(usb_device_info_t *info) {
 
 void usb_clear_device_info_cache(void) {
     usb_execute_on_core1(USB_OP_CLEAR_CACHE, NULL, NULL, 1000);
+}
+
+esp_err_t usb_endpoint_in_continuous(uint8_t endpoint, uint8_t device_addr, usb_endpoint_type_t ep_type,
+                                    uint8_t channel, uint8_t *buffer, size_t max_len,
+                                    uint32_t max_attempts, uint32_t attempt_timeout_ms, size_t *bytes_read) {
+    if (max_attempts == -1) {
+        ESP_LOGI(TAG, "EP%d IN: Continuous read - infinite attempts of %ldms each", endpoint, attempt_timeout_ms);
+    } else {
+        ESP_LOGI(TAG, "EP%d IN: Continuous read - up to %ld attempts of %ldms each", endpoint, max_attempts, attempt_timeout_ms);
+    }
+
+    uint32_t attempt = 1;
+    while (max_attempts == -1 || attempt <= max_attempts) {
+        if (max_attempts == -1) {
+            ESP_LOGD(TAG, "EP%d IN: Attempt %ld (infinite)", endpoint, attempt);
+        } else {
+            ESP_LOGD(TAG, "EP%d IN: Attempt %ld/%ld", endpoint, attempt, max_attempts);
+        }
+
+        esp_err_t ret = usb_endpoint_in(endpoint, device_addr, ep_type, channel,
+                                       buffer, max_len, attempt_timeout_ms, bytes_read);
+
+        if (ret == ESP_OK && bytes_read && *bytes_read > 0) {
+            ESP_LOGI(TAG, "EP%d IN: Success on attempt %ld - received %zu bytes",
+                     endpoint, attempt, *bytes_read);
+            return ESP_OK;
+        }
+
+        // Small delay between attempts to avoid overwhelming the device
+        vTaskDelay(pdMS_TO_TICKS(10));
+        attempt++;
+    }
+
+    if (max_attempts == -1) {
+        ESP_LOGW(TAG, "EP%d IN: Failed after %ld attempts (continuous mode stopped)", endpoint, attempt - 1);
+    } else {
+        ESP_LOGW(TAG, "EP%d IN: Failed after %ld attempts", endpoint, max_attempts);
+    }
+    return ESP_ERR_TIMEOUT;
+}
+
+esp_err_t usb_endpoint_in(uint8_t endpoint, uint8_t device_addr, usb_endpoint_type_t ep_type,
+                          uint8_t channel, uint8_t *buffer, size_t max_len,
+                          uint32_t timeout_ms, size_t *bytes_read) {
+    usb_endpoint_params_t params = {
+        .endpoint = endpoint & 0x0F,  // Strip direction bit if present
+        .device_addr = device_addr,
+        .ep_type = ep_type,
+        .channel = 1,  // Default channel 1
+        .buffer = buffer,
+        .data = NULL,
+        .length = max_len,
+        .timeout_ms = timeout_ms,
+        .bytes_transferred = bytes_read
+    };
+    params.channel = channel;  // Set the channel
+    return usb_execute_on_core1(USB_OP_ENDPOINT_IN, &params, NULL, timeout_ms + 500);
+}
+
+esp_err_t usb_endpoint_out(uint8_t endpoint, uint8_t device_addr, usb_endpoint_type_t ep_type,
+                           uint8_t channel, const uint8_t *data, size_t length,
+                           uint32_t timeout_ms) {
+    usb_endpoint_params_t params = {
+        .endpoint = endpoint & 0x0F,  // Strip direction bit if present
+        .device_addr = device_addr,
+        .ep_type = ep_type,
+        .channel = 1,  // Default channel 1
+        .buffer = NULL,
+        .data = data,
+        .length = length,
+        .timeout_ms = timeout_ms,
+        .bytes_transferred = NULL
+    };
+    params.channel = channel;  // Set the channel
+    return usb_execute_on_core1(USB_OP_ENDPOINT_OUT, &params, NULL, timeout_ms + 500);
 }
 
 // ============================================================================
@@ -995,4 +1095,240 @@ static esp_err_t usb_get_device_info_impl(usb_device_info_t *info) {
     }
     
     return ESP_FAIL;
+}
+
+// ============================================================================
+// Bulk/Interrupt Endpoint Transfers (for non-EP0 access)
+// ============================================================================
+
+/**
+ * Bulk/Interrupt IN transfer implementation
+ * Sends IN token to endpoint and receives data
+ */
+// QTD structure matching ESP-IDF's usb_dwc_ll_dma_qtd_t (from esp32s3/include/hal/usb_dwc_ll.h)
+typedef struct {
+    union {
+        struct {
+            uint32_t xfer_size: 17;      // bits 0-16: transfer size
+            uint32_t aqtd_offset: 6;     // bits 17-22: alternate QTD offset
+            uint32_t aqtd_valid: 1;      // bit 23: alternate QTD valid
+            uint32_t reserved_24: 1;     // bit 24
+            uint32_t intr_cplt: 1;       // bit 25: interrupt on complete
+            uint32_t eol: 1;             // bit 26: end of list (halt channel)
+            uint32_t reserved_27: 1;     // bit 27
+            uint32_t rx_status: 2;       // bits 28-29: RX status
+            uint32_t reserved_30: 1;     // bit 30
+            uint32_t active: 1;          // bit 31: active flag for DMA
+        } in_non_iso;
+        uint32_t buffer_status_val;
+    };
+    uint8_t *buffer;
+} ep_qtd_t;
+
+static esp_err_t usb_endpoint_in_impl(const usb_endpoint_params_t *params) {
+    if (params == NULL || params->buffer == NULL) {
+        ESP_LOGE(TAG, "Invalid endpoint IN params");
+        return ESP_ERR_INVALID_ARG;
     }
+
+    int chhltd_retries = 0;
+
+    ESP_LOGI(TAG, "EP%d IN: Reading up to %zu bytes (addr=%d, timeout=%ldms)",
+             params->endpoint, params->length, params->device_addr, params->timeout_ms);
+
+    const int chan_num = params->channel;  // Use configurable channel
+    volatile usb_dwc_host_chan_regs_t *chan_regs = &hal_context.dev->host_chans[chan_num];
+
+    // Halt channel if active
+    if (usb_dwc_ll_hcchar_chan_is_enabled(chan_regs)) {
+        usb_dwc_ll_hcchar_disable_chan(chan_regs);
+        for (int i = 0; i < 10; i++) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+            if (!usb_dwc_ll_hcchar_chan_is_enabled(chan_regs)) break;
+        }
+    }
+
+    // Clear interrupts and flush RX FIFO
+    usb_dwc_ll_hcint_read_and_clear_intrs(chan_regs);
+    usb_dwc_ll_grstctl_flush_rx_fifo(hal_context.dev);
+
+    usb_dwc_xfer_type_t xfer_type = (params->ep_type == USB_EP_TYPE_INTERRUPT)
+                                        ? USB_DWC_XFER_TYPE_INTR
+                                        : USB_DWC_XFER_TYPE_BULK;
+
+    // Configure channel for bulk/interrupt IN
+    usb_dwc_ll_hcchar_set_ep_num(chan_regs, params->endpoint);
+    usb_dwc_ll_hcchar_set_dev_addr(chan_regs, params->device_addr);
+    usb_dwc_ll_hcchar_set_ep_type(chan_regs, xfer_type);
+    usb_dwc_ll_hcchar_set_mps(chan_regs, 64);
+    usb_dwc_ll_hcchar_set_dir(chan_regs, 1);  // IN direction
+
+    // Prepare DMA buffer
+    static uint8_t ep_rx_buffer[256] __attribute__((aligned(4)));
+    size_t rx_len = (params->length > sizeof(ep_rx_buffer)) ? sizeof(ep_rx_buffer) : params->length;
+    memset(ep_rx_buffer, 0, sizeof(ep_rx_buffer));
+
+    // Configure transfer size
+    usb_dwc_ll_hctsiz_init(chan_regs);
+    chan_regs->hctsiz_reg.xfersize = rx_len;
+    chan_regs->hctsiz_reg.pktcnt = (rx_len + 63) / 64;
+    // Use DATA0 for both interrupt and bulk IN (standard USB start)
+    usb_dwc_ll_hctsiz_set_pid(chan_regs, 0);
+
+    // Set DMA address
+    chan_regs->hcdma_reg.dmaaddr = (uint32_t)ep_rx_buffer;
+
+    // Enable channel
+    usb_dwc_ll_hcchar_enable_chan(chan_regs);
+
+    // Wait for completion
+    uint32_t start_time = xTaskGetTickCount();
+    uint32_t timeout_ticks = pdMS_TO_TICKS(params->timeout_ms);
+
+    while ((xTaskGetTickCount() - start_time) < timeout_ticks) {
+        uint32_t hcint = usb_dwc_ll_hcint_read_and_clear_intrs(chan_regs);
+
+        if (hcint & USB_DWC_LL_INTR_CHAN_CHHLTD) {
+            if (hcint & USB_DWC_LL_INTR_CHAN_XFERCOMPL) {
+                uint32_t remaining = chan_regs->hctsiz_reg.xfersize;
+                size_t received = (remaining <= rx_len) ? (rx_len - remaining) : 0;
+                if (received > 0 && received <= rx_len) {
+                    memcpy(params->buffer, ep_rx_buffer, received);
+                    if (params->bytes_transferred) {
+                        *params->bytes_transferred = received;
+                    }
+                    ESP_LOGI(TAG, "EP%d IN: Received %zu bytes", params->endpoint, received);
+                    ESP_LOG_BUFFER_HEX_LEVEL(TAG, params->buffer,
+                                             received > 64 ? 64 : received, ESP_LOG_INFO);
+                    return ESP_OK;
+                }
+            }
+
+            if (hcint & USB_DWC_LL_INTR_CHAN_NAK) {
+                usb_dwc_ll_hcchar_enable_chan(chan_regs);
+                vTaskDelay(pdMS_TO_TICKS(1));
+                continue;
+            }
+
+            if (hcint & USB_DWC_LL_INTR_CHAN_STALL) {
+                ESP_LOGW(TAG, "EP%d IN: STALL", params->endpoint);
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+
+            // CHHLTD with no other flags: retry a few times in case of transient halt
+            if (chhltd_retries < 3) {
+                chhltd_retries++;
+                usb_dwc_ll_hcchar_enable_chan(chan_regs);
+                vTaskDelay(pdMS_TO_TICKS(1));
+                continue;
+            }
+
+            ESP_LOGW(TAG, "EP%d IN: Error (hcint=0x%lx)", params->endpoint, hcint);
+            return ESP_FAIL;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    if (params->bytes_transferred) {
+        *params->bytes_transferred = 0;
+    }
+    ESP_LOGW(TAG, "EP%d IN: Timeout", params->endpoint);
+    return ESP_ERR_TIMEOUT;
+}
+
+/**
+ * Bulk/Interrupt OUT transfer implementation
+ * Sends data to specified endpoint
+ */
+static esp_err_t usb_endpoint_out_impl(const usb_endpoint_params_t *params) {
+    if (params == NULL || (params->data == NULL && params->length > 0)) {
+        ESP_LOGE(TAG, "Invalid endpoint OUT params");
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    ESP_LOGI(TAG, "EP%d OUT: Sending %zu bytes (addr=%d)",
+             params->endpoint, params->length, params->device_addr);
+    
+    const int chan_num = params->channel;  // Use configurable channel
+    volatile usb_dwc_host_chan_regs_t *chan_regs = &hal_context.dev->host_chans[chan_num];
+    
+    // Halt channel if active
+    if (usb_dwc_ll_hcchar_chan_is_enabled(chan_regs)) {
+        usb_dwc_ll_hcchar_disable_chan(chan_regs);
+        for (int i = 0; i < 10; i++) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+            if (!usb_dwc_ll_hcchar_chan_is_enabled(chan_regs)) break;
+        }
+    }
+    
+    // Clear interrupts
+    usb_dwc_ll_hcint_read_and_clear_intrs(chan_regs);
+    
+    usb_dwc_xfer_type_t xfer_type = (params->ep_type == USB_EP_TYPE_INTERRUPT)
+                                        ? USB_DWC_XFER_TYPE_INTR
+                                        : USB_DWC_XFER_TYPE_BULK;
+
+    // Configure channel for bulk/interrupt OUT
+    usb_dwc_ll_hcchar_set_ep_num(chan_regs, params->endpoint);
+    usb_dwc_ll_hcchar_set_dev_addr(chan_regs, params->device_addr);
+    usb_dwc_ll_hcchar_set_ep_type(chan_regs, xfer_type);
+    usb_dwc_ll_hcchar_set_mps(chan_regs, 64);
+    usb_dwc_ll_hcchar_set_dir(chan_regs, 0);  // OUT direction
+    
+    // Prepare DMA buffer
+    static uint8_t ep_tx_buffer[256] __attribute__((aligned(4)));
+    size_t copy_len = (params->length > sizeof(ep_tx_buffer)) ? sizeof(ep_tx_buffer) : params->length;
+    memset(ep_tx_buffer, 0, sizeof(ep_tx_buffer));
+    if (params->data && copy_len > 0) {
+        memcpy(ep_tx_buffer, params->data, copy_len);
+    }
+    
+    // Configure transfer size
+    usb_dwc_ll_hctsiz_init(chan_regs);
+    chan_regs->hctsiz_reg.xfersize = copy_len;
+    chan_regs->hctsiz_reg.pktcnt = (copy_len + 63) / 64;
+    usb_dwc_ll_hctsiz_set_pid(chan_regs, 0);  // DATA0
+    
+    // Set DMA address
+    chan_regs->hcdma_reg.dmaaddr = (uint32_t)ep_tx_buffer;
+    
+    ESP_LOG_BUFFER_HEX_LEVEL(TAG, ep_tx_buffer, copy_len > 32 ? 32 : copy_len, ESP_LOG_INFO);
+    
+    // Enable channel
+    usb_dwc_ll_hcchar_enable_chan(chan_regs);
+    
+    // Wait for completion
+    uint32_t start_time = xTaskGetTickCount();
+    uint32_t timeout_ticks = pdMS_TO_TICKS(params->timeout_ms);
+    
+    while ((xTaskGetTickCount() - start_time) < timeout_ticks) {
+        uint32_t hcint = usb_dwc_ll_hcint_read_and_clear_intrs(chan_regs);
+        
+        if (hcint & USB_DWC_LL_INTR_CHAN_CHHLTD) {
+            if (hcint & USB_DWC_LL_INTR_CHAN_XFERCOMPL) {
+                ESP_LOGI(TAG, "EP%d OUT: Sent %zu bytes", params->endpoint, copy_len);
+                return ESP_OK;
+            }
+            
+            if (hcint & USB_DWC_LL_INTR_CHAN_NAK) {
+                usb_dwc_ll_hcchar_enable_chan(chan_regs);
+                vTaskDelay(pdMS_TO_TICKS(1));
+                continue;
+            }
+            
+            if (hcint & USB_DWC_LL_INTR_CHAN_STALL) {
+                ESP_LOGW(TAG, "EP%d OUT: STALL", params->endpoint);
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+            
+            ESP_LOGW(TAG, "EP%d OUT: Error (hcint=0x%lx)", params->endpoint, hcint);
+            return ESP_FAIL;
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    
+    ESP_LOGW(TAG, "EP%d OUT: Timeout", params->endpoint);
+    return ESP_ERR_TIMEOUT;
+}

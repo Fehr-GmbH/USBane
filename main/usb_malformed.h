@@ -147,6 +147,49 @@ esp_err_t usb_read_response(uint8_t *buffer, size_t max_len,
                             int max_nak_retries);
 
 /**
+ * @brief Bulk/Interrupt IN transfer from any endpoint
+ * 
+ * Sends IN token to specified endpoint and receives data.
+ * Used for non-control endpoint reads (e.g., exploit Phase 4).
+ * 
+ * @param endpoint Endpoint number (1-15, direction bit optional)
+ * @param device_addr Device address
+ * @param buffer Buffer to store received data
+ * @param max_len Maximum bytes to read
+ * @param timeout_ms Transfer timeout
+ * @param bytes_read Output: actual bytes received
+ * @return ESP_OK if data received, ESP_ERR_TIMEOUT if no response
+ */
+typedef enum {
+    USB_EP_TYPE_BULK = 0,
+    USB_EP_TYPE_INTERRUPT = 1
+} usb_endpoint_type_t;
+
+esp_err_t usb_endpoint_in(uint8_t endpoint, uint8_t device_addr, usb_endpoint_type_t ep_type,
+                          uint8_t channel, uint8_t *buffer, size_t max_len,
+                          uint32_t timeout_ms, size_t *bytes_read);
+
+esp_err_t usb_endpoint_in_continuous(uint8_t endpoint, uint8_t device_addr, usb_endpoint_type_t ep_type,
+                                    uint8_t channel, uint8_t *buffer, size_t max_len,
+                                    uint32_t max_attempts, uint32_t attempt_timeout_ms, size_t *bytes_read);
+
+/**
+ * @brief Bulk/Interrupt OUT transfer to any endpoint
+ * 
+ * Sends data to specified endpoint.
+ * 
+ * @param endpoint Endpoint number (1-15)
+ * @param device_addr Device address
+ * @param data Data to send
+ * @param length Data length
+ * @param timeout_ms Transfer timeout
+ * @return ESP_OK if data sent successfully
+ */
+esp_err_t usb_endpoint_out(uint8_t endpoint, uint8_t device_addr, usb_endpoint_type_t ep_type,
+                           uint8_t channel, const uint8_t *data, size_t length,
+                           uint32_t timeout_ms);
+
+/**
  * @brief Check if USB device is still connected
  * 
  * @return true if device is connected

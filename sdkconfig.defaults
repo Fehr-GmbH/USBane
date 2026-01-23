@@ -1,5 +1,5 @@
 # USBane Configuration
-CONFIG_USBANE_VERSION="0.1.0"
+CONFIG_USBANE_VERSION="0.1.1"
 
 # Partition Table - Use two OTA partitions for future OTA updates (1700KB each)
 CONFIG_PARTITION_TABLE_TWO_OTA_LARGE=y

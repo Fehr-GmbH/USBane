@@ -361,7 +361,27 @@ function selectChainQuickDataMode(mode) {
     }
 }
 
+function selectChainQuickRetry(retry) {
+    document.getElementById('chain_quick_retry').value = retry ? 'true' : 'false';
+    if (retry) {
+        document.getElementById('chain_quick_retry_yes').style.background = '#28a745';
+        document.getElementById('chain_quick_retry_yes').style.color = '#fff';
+        document.getElementById('chain_quick_retry_yes').style.fontWeight = 'bold';
+        document.getElementById('chain_quick_retry_no').style.background = '#333';
+        document.getElementById('chain_quick_retry_no').style.color = '#888';
+        document.getElementById('chain_quick_retry_no').style.fontWeight = 'normal';
+    } else {
+        document.getElementById('chain_quick_retry_no').style.background = '#ff9800';
+        document.getElementById('chain_quick_retry_no').style.color = '#fff';
+        document.getElementById('chain_quick_retry_no').style.fontWeight = 'bold';
+        document.getElementById('chain_quick_retry_yes').style.background = '#333';
+        document.getElementById('chain_quick_retry_yes').style.color = '#888';
+        document.getElementById('chain_quick_retry_yes').style.fontWeight = 'normal';
+    }
+}
+
 function addQuickChainRequest() {
+    const retryValue = document.getElementById('chain_quick_retry').value;
     const req = {
         type: 'usbrequest',
         bmRequestType: document.getElementById('chain_quick_bmRequestType').value,
@@ -371,7 +391,8 @@ function addQuickChainRequest() {
         wLength: parseInt(document.getElementById('chain_quick_wLength').value),
         packetSize: parseInt(document.getElementById('chain_quick_packetSize').value),
         dataMode: document.getElementById('chain_quick_dataMode').value,
-        dataBytes: document.getElementById('chain_quick_data').value
+        dataBytes: document.getElementById('chain_quick_data').value,
+        noRetry: retryValue === 'false'  // noRetry=true when Retry=NO
     };
     
     chainRequests.push(req);
@@ -901,6 +922,36 @@ function renderChain() {
             html += '<button onclick="removeFromChain(' + i + ')" style="padding:2px 6px;margin:1px;font-size:10px;background:#dc3545;">x</button>';
             html += '</td>';
             html += '</tr>';
+        } else if (actionType === 'endpoint_in') {
+            // Endpoint IN row (bulk/interrupt read)
+            let bgColor = '#e91e63';
+            let configInfo = 'EP' + (req.endpoint || 10) + ' IN, addr=' + (req.deviceAddr || 0) + ', len=' + (req.length || 64) + ', timeout=' + (req.timeout || 1000) + 'ms';
+            
+            html += '<tr style="background:' + bgColor + '22;">';
+            html += '<td style="padding:4px;border:1px solid #555;text-align:center;">' + (i + 1) + '</td>';
+            html += '<td style="padding:4px;border:1px solid #555;color:' + bgColor + ';font-weight:bold;">EP IN</td>';
+            html += '<td colspan="7" style="padding:4px;border:1px solid #555;">' + configInfo + '</td>';
+            html += '<td style="padding:4px;border:1px solid #555;text-align:center;">';
+            html += '<button onclick="moveChainItem(' + i + ',-1)" style="padding:2px 6px;margin:1px;font-size:10px;background:#555;">^</button>';
+            html += '<button onclick="moveChainItem(' + i + ',1)" style="padding:2px 6px;margin:1px;font-size:10px;background:#555;">v</button>';
+            html += '<button onclick="removeFromChain(' + i + ')" style="padding:2px 6px;margin:1px;font-size:10px;background:#dc3545;">x</button>';
+            html += '</td>';
+            html += '</tr>';
+        } else if (actionType === 'endpoint_out') {
+            // Endpoint OUT row (bulk/interrupt write)
+            let bgColor = '#9c27b0';
+            let configInfo = 'EP' + (req.endpoint || 10) + ' OUT, addr=' + (req.deviceAddr || 0) + ', data=' + (req.dataBytes || '(none)');
+            
+            html += '<tr style="background:' + bgColor + '22;">';
+            html += '<td style="padding:4px;border:1px solid #555;text-align:center;">' + (i + 1) + '</td>';
+            html += '<td style="padding:4px;border:1px solid #555;color:' + bgColor + ';font-weight:bold;">EP OUT</td>';
+            html += '<td colspan="7" style="padding:4px;border:1px solid #555;">' + configInfo + '</td>';
+            html += '<td style="padding:4px;border:1px solid #555;text-align:center;">';
+            html += '<button onclick="moveChainItem(' + i + ',-1)" style="padding:2px 6px;margin:1px;font-size:10px;background:#555;">^</button>';
+            html += '<button onclick="moveChainItem(' + i + ',1)" style="padding:2px 6px;margin:1px;font-size:10px;background:#555;">v</button>';
+            html += '<button onclick="removeFromChain(' + i + ')" style="padding:2px 6px;margin:1px;font-size:10px;background:#dc3545;">x</button>';
+            html += '</td>';
+            html += '</tr>';
         } else if (actionType === 'condition') {
             // Condition row
             let bgColor = '#ff9800';
@@ -944,9 +995,10 @@ function renderChain() {
         } else {
             // USB request row - original styling
             const dataPreview = req.dataBytes ? (req.dataBytes.substring(0, 12) + (req.dataBytes.length > 12 ? '...' : '')) : '-';
+            const noRetryFlag = req.noRetry ? ' <span style="color:#ff9800;font-size:9px;" title="No Retry - expects timeout">NR</span>' : '';
             html += '<tr>';
             html += '<td style="padding:4px;border:1px solid #555;text-align:center;">' + (i + 1) + '</td>';
-            html += '<td style="padding:4px;border:1px solid #555;color:#28a745;">USB</td>';
+            html += '<td style="padding:4px;border:1px solid #555;color:#28a745;">USB' + noRetryFlag + '</td>';
             html += '<td style="padding:4px;border:1px solid #555;cursor:pointer;" onclick="editChainCell(' + i + ',\'bmRequestType\',this)">' + req.bmRequestType + '</td>';
             html += '<td style="padding:4px;border:1px solid #555;cursor:pointer;" onclick="editChainCell(' + i + ',\'bRequest\',this)">' + req.bRequest + '</td>';
             html += '<td style="padding:4px;border:1px solid #555;cursor:pointer;" onclick="editChainCell(' + i + ',\'wValue\',this)">' + req.wValue + '</td>';
@@ -1249,6 +1301,10 @@ async function executeChain() {
                 skippedDesc = 'Action: ' + (req.actionType || '?').toUpperCase();
             } else if (actionType === 'condition') {
                 skippedDesc = 'Condition';
+            } else if (actionType === 'endpoint_in') {
+                skippedDesc = 'EP' + (req.endpoint || 10) + ' IN';
+            } else if (actionType === 'endpoint_out') {
+                skippedDesc = 'EP' + (req.endpoint || 10) + ' OUT';
             }
             addTableRow('SKIPPED', skippedDesc, '-', '-', '', '', 'info');
             
@@ -1630,10 +1686,13 @@ async function executeChain() {
             }
             
             // Add condition result to table
-            const conditionDesc = valueA + ' ' + operator + ' ' + valueB;
-            const resultData = conditionResult ? 'TRUE' : 'FALSE';
-            const resultAscii = conditionResult ? 'PASS' : 'FAIL';
-            addTableRow('Condition', conditionDesc, resultData, resultAscii, '', '', conditionResult ? 'success' : 'info');
+            // Format: Condition | ValueA | ReqNoA | LenA | Operator | ValueB | ReqNoB | LenB | SUCCESS/FAIL
+            const reqNoA = req.valueASource === 'manual' ? '-' : (req.valueAReqNo !== undefined ? req.valueAReqNo : -1);
+            const lenA = req.valueASource === 'manual' ? '-' : (req.valueALength !== undefined ? (req.valueALength === -1 ? 'all' : req.valueALength) : 'all');
+            const reqNoB = req.valueBSource === 'manual' ? '-' : (req.valueBReqNo !== undefined ? req.valueBReqNo : -1);
+            const lenB = req.valueBSource === 'manual' ? '-' : (req.valueBLength !== undefined ? (req.valueBLength === -1 ? 'all' : req.valueBLength) : 'all');
+            const statusText = conditionResult ? 'SUCCESS' : 'FAIL';
+            addTableRow('Condition', valueA || '-', reqNoA, lenA, operator, valueB || '-', reqNoB, lenB, statusText);
             
             // Execute action if condition is true
             if (conditionResult) {
@@ -1653,13 +1712,87 @@ async function executeChain() {
             continue;
         }
         
+        // Handle endpoint_in actions (bulk/interrupt IN from any endpoint)
+        if (req.type === 'endpoint_in') {
+            progress.innerText = 'EP' + req.endpoint + ' IN (' + (i + 1) + '/' + chainRequests.length + ')';
+            progress.style.color = '#e91e63';
+            
+            try {
+                const epType = req.epType || 'bulk';
+                const url = '/api/endpoint_in?ep=' + req.endpoint +
+                    '&addr=' + (req.deviceAddr || 0) +
+                    '&channel=' + (req.channel || 1) +
+                    '&len=' + (req.length || 64) +
+                    '&timeout=' + (req.timeout || 1000) +
+                    '&type=' + epType +
+                    '&continuous=' + (req.continuous ? 1 : 0) +
+                    '&max_attempts=' + (req.maxAttempts || 10);
+                
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                lastResponse = data;
+                const status = data.status === 'success' ? 'success' : 'warning';
+                addTableRow('EP' + req.endpoint + ' IN', epType, 'addr=' + (req.deviceAddr || 0), 
+                    'len=' + (req.length || 64), data.bytes_received || 0, 
+                    (req.timeout || 1000) + 'ms', data.bytes_received || 0, 
+                    data.data || '', data.ascii || '', '', '', status);
+                    
+            } catch(e) {
+                addTableRow('EP' + req.endpoint + ' IN', 'ERROR', '', '', 0, '', 0, e.message, '', '', '', 'warning');
+            }
+            
+            if (i < chainRequests.length - 1 && chainRunning) {
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+            continue;
+        }
+        
+        // Handle endpoint_out actions (bulk/interrupt OUT to any endpoint)
+        if (req.type === 'endpoint_out') {
+            progress.innerText = 'EP' + req.endpoint + ' OUT (' + (i + 1) + '/' + chainRequests.length + ')';
+            progress.style.color = '#9c27b0';
+            
+            try {
+                const dataBytes = encodeURIComponent(req.dataBytes || '');
+                const epType = req.epType || 'bulk';
+                const url = '/api/endpoint_out?ep=' + req.endpoint +
+                    '&addr=' + (req.deviceAddr || 0) +
+                    '&channel=' + (req.channel || 1) +
+                    '&data=' + dataBytes +
+                    '&timeout=' + (req.timeout || 1000) +
+                    '&type=' + epType;
+                
+                const response = await fetch(url, { method: 'POST' });
+                const data = await response.json();
+                
+                const status = data.status === 'success' ? 'success' : 'warning';
+                addTableRow('EP' + req.endpoint + ' OUT', epType, 'addr=' + (req.deviceAddr || 0), 
+                    req.dataBytes || '', data.bytes_sent || 0, 
+                    (req.timeout || 1000) + 'ms', data.bytes_sent || 0, 
+                    data.status, '', '', '', status);
+                    
+            } catch(e) {
+                addTableRow('EP' + req.endpoint + ' OUT', 'ERROR', '', '', 0, '', 0, e.message, '', '', '', 'warning');
+            }
+            
+            if (i < chainRequests.length - 1 && chainRunning) {
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+            continue;
+        }
+        
         // Handle USB request actions (original logic)
         let retryCount = 0;
         let success = false;
         
-        while (!success && retryCount <= maxBfRetries && chainRunning) {
+        // Check if this request has noRetry flag (for overflow packets that expect timeout)
+        const noRetry = req.noRetry === true;
+        const effectiveMaxRetries = noRetry ? 0 : maxBfRetries;
+        
+        while (!success && retryCount <= effectiveMaxRetries && chainRunning) {
             if (retryCount > 0) {
-                progress.innerText = 'Request ' + (i + 1) + ' RETRY ' + retryCount + '/' + maxBfRetries;
+                progress.innerText = 'Request ' + (i + 1) + ' RETRY ' + retryCount + '/' + effectiveMaxRetries;
                 progress.style.color = '#ff5722';
                 
                 // Optional USB reset before retry
@@ -1677,15 +1810,20 @@ async function executeChain() {
             
             try {
                 const dataBytes = encodeURIComponent(req.dataBytes || '');
-                const url = '/api/send_request?bmRequestType=' + req.bmRequestType + 
-                    '&bRequest=' + req.bRequest + 
-                    '&wValue=' + req.wValue + 
-                    '&wIndex=' + req.wIndex + 
-                    '&wLength=' + req.wLength + 
-                    '&packetSize=' + req.packetSize + 
-                    '&maxRetries=' + maxRetries + 
-                    '&dataBytes=' + dataBytes + 
-                    '&dataMode=' + (req.dataMode || 'separate');
+                const apiMaxRetries = noRetry ? 1 : maxRetries;  // Only 1 attempt for noRetry packets
+                const globalTimeout = parseInt(document.getElementById('cfg_timeout').value) || 1000;
+                const apiTimeout = noRetry ? Math.min(globalTimeout, 100) : globalTimeout;  // Max 100ms for noRetry overflow packets
+                const url = '/api/send_request?bmRequestType=' + req.bmRequestType +
+                    '&bRequest=' + req.bRequest +
+                    '&wValue=' + req.wValue +
+                    '&wIndex=' + req.wIndex +
+                    '&wLength=' + req.wLength +
+                    '&packetSize=' + req.packetSize +
+                    '&maxRetries=' + apiMaxRetries +
+                    '&timeout=' + apiTimeout +
+                    '&dataBytes=' + dataBytes +
+                    '&dataMode=' + (req.dataMode || 'separate') +
+                    '&deviceAddr=' + (req.deviceAddr || 0);
                 
                 const response = await fetch(url, { method: 'POST' });
                 const data = await response.json();
@@ -1698,9 +1836,10 @@ async function executeChain() {
                     addTableRow(req.bmRequestType, req.bRequest, req.wValue, req.wIndex, req.wLength, 
                         req.packetSize, data.bytes_received || 0, data.data || '', data.ascii || '');
                 } else {
-                    // Failed - will retry
+                    // Failed - will retry (unless noRetry flag)
                     retryCount++;
-                    if (retryCount > maxBfRetries) {
+                    if (retryCount > effectiveMaxRetries) {
+                        // Show original status (TIMEOUT etc) - noRetry just skips retries
                         addTableRow(req.bmRequestType, req.bRequest, req.wValue, req.wIndex, req.wLength, 
                             req.packetSize, data.bytes_received || 0, data.data || 'FAILED', data.ascii || '');
                     }
@@ -1709,7 +1848,7 @@ async function executeChain() {
             } catch (e) {
                 console.error('Chain request failed:', e);
                 retryCount++;
-                if (retryCount > maxBfRetries) {
+                if (retryCount > effectiveMaxRetries) {
                     addTableRow(req.bmRequestType, req.bRequest, req.wValue, req.wIndex, req.wLength, 
                         req.packetSize, 0, 'ERROR', e.toString());
                 }
@@ -1808,8 +1947,15 @@ function exportChainCSV() {
             const bLength = req.valueBLength !== undefined ? req.valueBLength : -1;
             const bValue = req.valueBValue || '';
             csv += 'condition,' + op + ',' + aSource + ',' + aReqNo + ',' + aLength + ',"' + aValue + '",' + bSource + ',' + bReqNo + ',' + bLength + ',"' + bValue + '",' + action + '\n';
+        } else if (actionType === 'endpoint_in') {
+            csv += 'endpoint_in,' + (req.endpoint || 10) + ',' + (req.deviceAddr || 0) + ',' +
+                   (req.channel || 1) + ',' + (req.length || 64) + ',' + (req.timeout || 1000) + ',' + (req.epType || 'bulk') + ',' +
+                   (req.continuous ? 1 : 0) + ',' + (req.maxAttempts || 10) + '\n';
+        } else if (actionType === 'endpoint_out') {
+            csv += 'endpoint_out,' + (req.endpoint || 10) + ',' + (req.deviceAddr || 0) + ',' +
+                   (req.channel || 1) + ',"' + (req.dataBytes || '') + '",' + (req.timeout || 1000) + ',' + (req.epType || 'bulk') + '\n';
         } else {
-            csv += [
+            let line = [
                 'usbrequest',
                 req.bmRequestType,
                 req.bRequest,
@@ -1818,8 +1964,14 @@ function exportChainCSV() {
                 req.wLength,
                 req.packetSize,
                 req.dataMode || 'separate',
-                '"' + (req.dataBytes || '') + '"'
-            ].join(',') + '\n';
+                '"' + (req.dataBytes || '') + '"',
+                req.deviceAddr || 0
+            ].join(',');
+            // Append noretry flag if set
+            if (req.noRetry) {
+                line += ',noretry';
+            }
+            csv += line + '\n';
         }
     });
     
@@ -1964,7 +2116,10 @@ function handleChainFileImport(event) {
                 });
                 imported++;
             } else if (actionType === 'usbrequest' && parts.length >= 7) {
-                // Format: usbrequest,bmRequestType,bRequest,wValue,wIndex,wLength,packetSize,dataMode,dataBytes
+                // Format: usbrequest,bmRequestType,bRequest,wValue,wIndex,wLength,packetSize,dataMode,dataBytes,deviceAddr,noretry
+                // parts[9] = deviceAddr, parts[10] = noretry flag (optional)
+                const deviceAddr = parseInt(parts[9]) || 0;
+                const hasNoRetry = parts[10] && parts[10].toLowerCase().trim() === 'noretry';
                 chainRequests.push({
                     type: 'usbrequest',
                     bmRequestType: parts[1],
@@ -1974,7 +2129,37 @@ function handleChainFileImport(event) {
                     wLength: parseInt(parts[5]),
                     packetSize: parseInt(parts[6]),
                     dataMode: parts[7] || 'separate',
-                    dataBytes: parts[8] || ''
+                    dataBytes: parts[8] || '',
+                    deviceAddr: deviceAddr,
+                    noRetry: hasNoRetry
+                });
+                imported++;
+            } else if (actionType === 'endpoint_in' && parts.length >= 3) {
+                // Format: endpoint_in,ep,addr,channel,length,timeout,type,continuous,max_attempts
+                // Read from bulk/interrupt endpoint (for exploits)
+                chainRequests.push({
+                    type: 'endpoint_in',
+                    endpoint: parseInt(parts[1]) || 10,
+                    deviceAddr: parseInt(parts[2]) || 0,
+                    channel: parseInt(parts[3]) || 1,
+                    length: parseInt(parts[4]) || 64,
+                    timeout: parseInt(parts[5]) || 1000,
+                    epType: (parts[6] || 'bulk').toLowerCase(),
+                    continuous: parseInt(parts[7]) || 0,
+                    maxAttempts: parseInt(parts[8]) || 10
+                });
+                imported++;
+            } else if (actionType === 'endpoint_out' && parts.length >= 4) {
+                // Format: endpoint_out,ep,addr,channel,dataBytes,timeout,type
+                // Write to bulk/interrupt endpoint
+                chainRequests.push({
+                    type: 'endpoint_out',
+                    endpoint: parseInt(parts[1]) || 10,
+                    deviceAddr: parseInt(parts[2]) || 0,
+                    channel: parseInt(parts[3]) || 1,
+                    dataBytes: parts[4] || '',
+                    timeout: parseInt(parts[5]) || 1000,
+                    epType: (parts[6] || 'bulk').toLowerCase()
                 });
                 imported++;
             }
@@ -2641,6 +2826,185 @@ function selectDataMode(mode) {
     updatePacketSizeOnDataMode();
 }
 
+// ============================================================
+// Bulk/Interrupt Endpoint Transfer Functions
+// ============================================================
+
+var currentEpDirection = 'in';
+var currentEpType = 'bulk';
+
+function selectEpDirection(dir) {
+    currentEpDirection = dir;
+    const inBtn = document.getElementById('ep_dir_in');
+    const outBtn = document.getElementById('ep_dir_out');
+    const lengthLabel = document.getElementById('ep_length_label');
+    const dataLabel = document.getElementById('ep_data_label');
+    const dataInput = document.getElementById('ep_data_out');
+    
+    if (dir === 'in') {
+        inBtn.style.background = '#17a2b8';
+        inBtn.style.color = '#fff';
+        inBtn.style.fontWeight = 'bold';
+        outBtn.style.background = '#333';
+        outBtn.style.color = '#888';
+        outBtn.style.fontWeight = 'normal';
+        lengthLabel.textContent = 'Length';
+        dataInput.placeholder = 'Not used for IN transfers';
+        dataInput.disabled = true;
+        dataInput.style.background = '#1a1a1a';
+    } else {
+        outBtn.style.background = '#17a2b8';
+        outBtn.style.color = '#fff';
+        outBtn.style.fontWeight = 'bold';
+        inBtn.style.background = '#333';
+        inBtn.style.color = '#888';
+        inBtn.style.fontWeight = 'normal';
+        lengthLabel.textContent = 'Max Response';
+        dataInput.placeholder = 'DEADBEEF... (hex bytes to send)';
+        dataInput.disabled = false;
+        dataInput.style.background = '#333';
+    }
+}
+
+function selectEpType(type) {
+    console.log('selectEpType called with:', type);
+    currentEpType = type;
+    const bulkBtn = document.getElementById('ep_type_bulk');
+    const intBtn = document.getElementById('ep_type_interrupt');
+
+    if (!bulkBtn || !intBtn) {
+        console.error('Bulk/Interrupt buttons not found');
+        return;
+    }
+
+    if (type === 'bulk') {
+        bulkBtn.style.background = '#17a2b8';
+        bulkBtn.style.color = '#fff';
+        bulkBtn.style.fontWeight = 'bold';
+        intBtn.style.background = '#333';
+        intBtn.style.color = '#888';
+        intBtn.style.fontWeight = 'normal';
+    } else if (type === 'interrupt') {
+        intBtn.style.background = '#17a2b8';
+        intBtn.style.color = '#fff';
+        intBtn.style.fontWeight = 'bold';
+        bulkBtn.style.background = '#333';
+        bulkBtn.style.color = '#888';
+        bulkBtn.style.fontWeight = 'normal';
+    }
+    console.log('EpType set to:', currentEpType);
+}
+
+async function sendEndpointRequest() {
+    console.log('sendEndpointRequest called, currentEpDirection:', currentEpDirection, 'currentEpType:', currentEpType);
+    const endpoint = parseInt(document.getElementById('ep_endpoint').value) || 1;
+    const deviceAddr = parseInt(document.getElementById('ep_device_addr').value) || 0;
+    const channel = parseInt(document.getElementById('ep_channel').value) || 1;
+    const maxAttemptsElem = document.getElementById('ep_max_attempts');
+    const maxAttempts = maxAttemptsElem ? parseInt(maxAttemptsElem.value) || 10 : 10;
+    const continuous = (maxAttempts === -1);
+    const length = parseInt(document.getElementById('ep_length').value) || 64;
+    const timeout = parseInt(document.getElementById('ep_timeout').value) || 1000;
+    const dataOut = document.getElementById('ep_data_out').value.replace(/\s/g, '');
+
+    console.log('Parameters:', {endpoint, deviceAddr, channel, continuous, maxAttempts, length, timeout, dataOut});
+
+    const btn = document.getElementById('sendEpBtn');
+    const origText = btn.textContent;
+    btn.textContent = 'Sending...';
+    btn.disabled = true;
+    
+    try {
+        let url, response, data;
+        
+        if (currentEpDirection === 'in') {
+            // Endpoint IN (read from device)
+            url = '/api/endpoint_in?ep=' + endpoint +
+                  '&addr=' + deviceAddr +
+                  '&channel=' + channel +
+                  '&len=' + length +
+                  '&timeout=' + timeout +
+                  '&type=' + currentEpType +
+                  '&continuous=' + (continuous ? 1 : 0) +
+                  '&max_attempts=' + maxAttempts;
+            response = await fetch(url);
+            data = await response.json();
+            
+            // Add to results table
+            addTableRow('EP' + endpoint + '_IN', '-', '-', '-', '-', length, 
+                        data.bytes_received || 0, data.data || 'FAILED', data.ascii || '');
+        } else {
+            // Endpoint OUT (write to device)
+            url = '/api/endpoint_out?ep=' + endpoint +
+                  '&addr=' + deviceAddr +
+                  '&channel=' + channel +
+                  '&timeout=' + timeout +
+                  '&data=' + dataOut +
+                  '&type=' + currentEpType;
+            response = await fetch(url);
+            data = await response.json();
+            
+            // Add to results table
+            const bytesSent = dataOut.length / 2;
+            addTableRow('EP' + endpoint + '_OUT', '-', '-', '-', '-', bytesSent,
+                        data.bytes_sent || 0, data.status || 'FAILED', dataOut.substring(0, 32) + (dataOut.length > 32 ? '...' : ''));
+        }
+        
+        console.log('Endpoint transfer result:', data);
+        
+    } catch (err) {
+        console.error('Endpoint transfer error:', err);
+        addTableRow('EP' + endpoint + '_' + currentEpDirection.toUpperCase(), '-', '-', '-', '-', length,
+                    0, 'ERROR: ' + err.message, '');
+    } finally {
+        btn.textContent = origText;
+        btn.disabled = false;
+    }
+}
+
+function addEndpointToChain() {
+    const endpoint = parseInt(document.getElementById('ep_endpoint').value) || 1;
+    const deviceAddr = parseInt(document.getElementById('ep_device_addr').value) || 0;
+    const channel = parseInt(document.getElementById('ep_channel').value) || 1;
+    const maxAttemptsElem = document.getElementById('ep_max_attempts');
+    const maxAttempts = maxAttemptsElem ? parseInt(maxAttemptsElem.value) || 10 : 10;
+    const continuous = (maxAttempts === -1);
+    const length = parseInt(document.getElementById('ep_length').value) || 64;
+    const timeout = parseInt(document.getElementById('ep_timeout').value) || 1000;
+    const dataOut = document.getElementById('ep_data_out').value.replace(/\s/g, '');
+    
+    if (currentEpDirection === 'in') {
+        chainRequests.push({
+            type: 'endpoint_in',
+            endpoint: endpoint,
+            deviceAddr: deviceAddr,
+            channel: channel,
+            length: length,
+            timeout: timeout,
+            epType: currentEpType,
+            continuous: continuous,
+            maxAttempts: maxAttempts
+        });
+    } else {
+        chainRequests.push({
+            type: 'endpoint_out',
+            endpoint: endpoint,
+            deviceAddr: deviceAddr,
+            channel: channel,
+            dataBytes: dataOut,
+            timeout: timeout,
+            epType: currentEpType
+        });
+    }
+    
+    renderChain();
+    
+    // Switch to chain tab
+    switchTab(1);
+}
+
+// ============================================================
+
 // Segmented control for DATA Mode (Bruteforce)
 function selectBFDataMode(mode) {
     document.getElementById('bf_dataMode').value = mode;
@@ -2777,9 +3141,10 @@ function sendRequest() {
     let wLength = parseInt(document.getElementById('wLength').value);
     let packetSize = parseInt(document.getElementById('packetSize').value);
     let maxRetries = parseInt(document.getElementById('cfg_maxRetries').value);
+    let timeout = parseInt(document.getElementById('cfg_timeout').value) || 1000;
     let dataBytes = encodeURIComponent(document.getElementById('dataBytes').value);
     let dataMode = document.getElementById('dataMode').value;
-    fetch('/api/send_request?bmRequestType=' + bmRequestType + '&bRequest=' + bRequest + '&wValue=' + wValue + '&wIndex=' + wIndex + '&wLength=' + wLength + '&packetSize=' + packetSize + '&maxRetries=' + maxRetries + '&dataBytes=' + dataBytes + '&dataMode=' + dataMode, { method: 'POST' })
+    fetch('/api/send_request?bmRequestType=' + bmRequestType + '&bRequest=' + bRequest + '&wValue=' + wValue + '&wIndex=' + wIndex + '&wLength=' + wLength + '&packetSize=' + packetSize + '&maxRetries=' + maxRetries + '&timeout=' + timeout + '&dataBytes=' + dataBytes + '&dataMode=' + dataMode, { method: 'POST' })
     .then(r => r.json())
     .then(d => {
         addTableRow(bmRequestType, bRequest, wValue, wIndex, wLength, packetSize, d.bytes_received || 0, d.data || '', d.ascii || '');
@@ -2973,6 +3338,7 @@ function executeBruteforce(fields, delay) {
     let wLength = parseInt(document.getElementById('bf_wLength_start').value);
     let packetSize = parseInt(document.getElementById('bf_packetSize_start').value);
     let maxRetries = parseInt(document.getElementById('cfg_maxRetries').value);
+    let timeout = parseInt(document.getElementById('cfg_timeout').value) || 1000;
     let dataBytes = encodeURIComponent(document.getElementById('bf_dataBytes_start').value);
     let dataMode = document.getElementById('bf_dataMode').value;
     
@@ -2993,7 +3359,7 @@ function executeBruteforce(fields, delay) {
     let wIndex = '0x' + ((wIndexHi << 8) | wIndexLo).toString(16).padStart(4, '0');
     bf_count++;
     document.getElementById('bf_progress').innerText = 'Request ' + bf_count + ': bmReqType=' + bmRequestType + ' bReq=' + bRequest + ' wVal=' + wValue + ' wIdx=' + wIndex + ' wLen=' + wLength;
-    fetch('/api/send_request?bmRequestType=' + bmRequestType + '&bRequest=' + bRequest + '&wValue=' + wValue + '&wIndex=' + wIndex + '&wLength=' + wLength + '&packetSize=' + packetSize + '&maxRetries=' + maxRetries + '&dataBytes=' + dataBytes + '&dataMode=' + dataMode, { method: 'POST' })
+    fetch('/api/send_request?bmRequestType=' + bmRequestType + '&bRequest=' + bRequest + '&wValue=' + wValue + '&wIndex=' + wIndex + '&wLength=' + wLength + '&packetSize=' + packetSize + '&maxRetries=' + maxRetries + '&timeout=' + timeout + '&dataBytes=' + dataBytes + '&dataMode=' + dataMode, { method: 'POST' })
     .then(r => r.json())
     .then(d => {
         // Success if: got bytes, OR empty response without error (e.g. SET_INTERFACE)
