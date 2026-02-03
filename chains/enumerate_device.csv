@@ -1,0 +1,55 @@
+# USBane Example Chain: Device Enumeration
+# Replicates the "Fetch Device Info" functionality from Device Info tab
+# Fetches device descriptor, configuration descriptor, and string descriptors
+
+# Step 1: Get Device Descriptor (18 bytes)
+# bmRequestType=0x80 (Device-to-Host, Standard, Device)
+# bRequest=0x06 (GET_DESCRIPTOR)
+# wValue=0x0100 (Device Descriptor, Index 0)
+# wIndex=0x0000
+# wLength=18
+control,0x80,0x06,0x0100,0x0000,18,8,separate,,0,
+waitfor,delay,10
+
+# Step 2: Get Configuration Descriptor Header (9 bytes to get wTotalLength)
+control,0x80,0x06,0x0200,0x0000,9,8,separate,,0,
+
+# Copy wTotalLength from config descriptor header to wLength of next request
+# Format: action,copy,<source>,<fromReqNo>,<fromOffset>,<fromLength>,<toField>,<toReqNo>
+#   responsehex = copy from the response data
+#   -1 = fromReqNo: previous executed request
+#   2 = fromOffset: byte position where wTotalLength starts in config descriptor
+#   2 = fromLength: copy 2 bytes (wTotalLength is 16-bit little-endian)
+#   wLength = target field to set
+#   -1 = toReqNo: next request in chain
+action,copy,responsehex,-1,2,2,wLength,-1
+
+# Step 3: Get Full Configuration Descriptor using actual wTotalLength
+control,0x80,0x06,0x0200,0x0000,0,8,separate,,0,
+waitfor,delay,10
+
+# Step 4: Get String Descriptor 0 (Supported Languages)
+# wValue=0x0300 (String Descriptor, Index 0)
+control,0x80,0x06,0x0300,0x0000,255,8,separate,,0,
+waitfor,delay,10
+
+# Step 5: Get String Descriptor 1 (typically Manufacturer)
+# wIndex=0x0409 (English US language ID)
+control,0x80,0x06,0x0301,0x0409,255,8,separate,,0,
+waitfor,delay,10
+
+# Step 6: Get String Descriptor 2 (typically Product)
+control,0x80,0x06,0x0302,0x0409,255,8,separate,,0,
+waitfor,delay,10
+
+# Step 7: Get String Descriptor 3 (typically Serial Number)
+control,0x80,0x06,0x0303,0x0409,255,8,separate,,0,
+
+# Optional: Get BOS Descriptor (USB 3.x / 2.1 devices)
+# control,0x80,0x06,0x0F00,0x0000,255,8,separate,,0,
+
+# Optional: Get Device Qualifier (High-Speed devices)
+# control,0x80,0x06,0x0600,0x0000,10,8,separate,,0,
+
+# Done
+action,comment,Device enumeration complete

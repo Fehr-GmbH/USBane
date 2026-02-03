@@ -78,9 +78,6 @@ void app_main(void)
         if (connected != last_connected) {
             if (connected) {
                 ESP_LOGI(TAG, "USB Device connected!");
-                // Set flag so web interface will reset on next request
-                extern bool usb_needs_reset;
-                usb_needs_reset = true;
             } else {
                 ESP_LOGW(TAG, "USB Device disconnected!");
             }

@@ -27,8 +27,7 @@
 static const char *TAG = "WEB_UI";
 static httpd_handle_t server = NULL;
 
-// Global flag set by main.c when device connects/reconnects
-bool usb_needs_reset = true;  // Start true for first connection
+// Note: Auto-reset is handled internally by usbane.c when ctrl pipe isn't allocated
 
 // Webhook trigger storage for chain waitfor actions
 #define MAX_TRIGGERS 16
@@ -206,13 +205,21 @@ static void update_cpu_load(void) {
 // API handler: Send USB request
 static esp_err_t api_send_request_handler(httpd_req_t *req)
 {
+    ESP_LOGI(TAG, "=== API: send_request handler called ===");
+    
     static char query[HTTP_QUERY_MAX_LEN];
     static char dataBytes_str[HTTP_DATA_BYTES_MAX_LEN];
     static uint8_t customData[HTTP_CUSTOM_DATA_MAX_LEN];
     
+    // CRITICAL: Clear static buffers to prevent stale data contamination
+    memset(dataBytes_str, 0, sizeof(dataBytes_str));
+    memset(customData, 0, sizeof(customData));
+    
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         char bmRequestType_str[16], bRequest_str[16], wValue_str[16], wIndex_str[16], wLength_str[16];
         char packetSize_str[16], maxRetries_str[16], dataMode_str[16], timeout_str[16], deviceAddr_str[16];
+        char dataStageEp_str[16];
+        char setupOnly_str[16];
         uint8_t bmRequestType = 0x80;
         uint8_t bRequest = 0x06;
         uint16_t wValue = 0x0100;
@@ -222,6 +229,8 @@ static esp_err_t api_send_request_handler(httpd_req_t *req)
         int maxRetries = -1;
         uint32_t timeout_ms = USB_DEFAULT_TIMEOUT_MS;
         uint8_t deviceAddr = 0;  // Default: address 0
+        uint8_t dataStageEp = 0;  // Default: same EP (0=EP0), >0=redirect DATA stage IN tokens to this EP
+        bool setupOnly = false;   // Default: complete transfer. If true: return after SETUP ACK (skip DATA stage)
         bool hasCustomData = false;
         size_t customDataLen = 0;
         bool dataMode_append = false;  // Default: separate DATA OUT stage
@@ -261,6 +270,18 @@ static esp_err_t api_send_request_handler(httpd_req_t *req)
         if (httpd_query_key_value(query, "maxRetries", maxRetries_str, sizeof(maxRetries_str)) == ESP_OK) {
             maxRetries = atoi(maxRetries_str);
         }
+        if (httpd_query_key_value(query, "dataStageEp", dataStageEp_str, sizeof(dataStageEp_str)) == ESP_OK) {
+            dataStageEp = (uint8_t)atoi(dataStageEp_str);
+            if (dataStageEp > 0) {
+                ESP_LOGI(TAG, "DATA stage redirect: EP%d", dataStageEp);
+            }
+        }
+        if (httpd_query_key_value(query, "setupOnly", setupOnly_str, sizeof(setupOnly_str)) == ESP_OK) {
+            setupOnly = (atoi(setupOnly_str) != 0) || (strcmp(setupOnly_str, "true") == 0);
+            if (setupOnly) {
+                ESP_LOGI(TAG, "setup_only mode: will skip DATA stage");
+            }
+        }
         if (httpd_query_key_value(query, "timeout", timeout_str, sizeof(timeout_str)) == ESP_OK) {
             timeout_ms = (uint32_t)atoi(timeout_str);
             if (timeout_ms < 10) timeout_ms = 10;    // Minimum 10ms
@@ -281,10 +302,10 @@ static esp_err_t api_send_request_handler(httpd_req_t *req)
                 // Check if it's space/comma separated or continuous hex
                 if (strchr(dataBytes_str, ' ') != NULL || strchr(dataBytes_str, ',') != NULL) {
                     // Space or comma separated: "41 42 43" or "41,42,43"
-                    char *token = strtok(dataBytes_str, " ,");
-                    while (token != NULL && customDataLen < sizeof(customData)) {
-                        customData[customDataLen++] = (uint8_t)strtol(token, NULL, 16);
-                        token = strtok(NULL, " ,");
+                char *token = strtok(dataBytes_str, " ,");
+                while (token != NULL && customDataLen < sizeof(customData)) {
+                    customData[customDataLen++] = (uint8_t)strtol(token, NULL, 16);
+                    token = strtok(NULL, " ,");
                     }
                 } else {
                     // Continuous hex string: "AABBCCDD" (2 chars per byte)
@@ -295,20 +316,17 @@ static esp_err_t api_send_request_handler(httpd_req_t *req)
                     }
                 }
                 ESP_LOGI(TAG, "Custom DATA: %d bytes", customDataLen);
+                // Debug: Log the parsed custom data bytes
+                if (customDataLen > 0) {
+                    ESP_LOG_BUFFER_HEX_LEVEL(TAG, customData, customDataLen, ESP_LOG_INFO);
+                }
             }
         }
         
         ESP_LOGI(TAG, "API: USB Request - bmRequestType=0x%02x, bRequest=0x%02x, wValue=0x%04x, wIndex=0x%04x, wLength=%d, packetSize=%d, maxRetries=%d, timeout=%ldms", 
                  bmRequestType, bRequest, wValue, wIndex, wLength, packetSize, maxRetries, timeout_ms);
         
-        // Send USB reset if device was recently (re)connected
-        // Flag is set by main.c which monitors connection status continuously
-        extern bool usb_needs_reset;
-        if (usb_needs_reset && usb_is_device_connected()) {
-            ESP_LOGI(TAG, "Sending USB reset (device recently connected)...");
-            usb_send_reset();
-            usb_needs_reset = false;
-        }
+        // Note: Auto-reset is handled internally by usbane.c when control pipe isn't allocated
         
         // Create packet config
         usb_packet_config_t config = usb_packet_config_default();
@@ -321,6 +339,8 @@ static esp_err_t api_send_request_handler(httpd_req_t *req)
         config.packet_size = packetSize;
         config.max_nak_retries = maxRetries;
         config.timeout_ms = timeout_ms;
+        config.data_stage_ep = dataStageEp;
+        config.setup_only = setupOnly;
         
         // Allocate response buffer (static to avoid stack overflow)
         static uint8_t response_buffer[HTTP_RESPONSE_BUFFER_SIZE];
@@ -343,6 +363,9 @@ static esp_err_t api_send_request_handler(httpd_req_t *req)
                 memcpy(config.extra_data, customData, customDataLen);
                 config.packet_size = packetSize;
                 ESP_LOGI(TAG, "Mode: APPEND - Oversized SETUP packet: %d bytes (8 + %d)", packetSize, customDataLen);
+                // Debug: Verify extra_data after copy
+                ESP_LOGI(TAG, "extra_data after copy:");
+                ESP_LOG_BUFFER_HEX_LEVEL(TAG, config.extra_data, customDataLen, ESP_LOG_INFO);
             } else {
                 // Mode: Separate DATA OUT stage (normal USB protocol)
                 // Keep packet size at 8, send custom data as separate DATA OUT transaction
@@ -597,6 +620,8 @@ static esp_err_t api_wifi_config_handler(httpd_req_t *req)
 // API handler: Device info
 static esp_err_t api_device_info_handler(httpd_req_t *req)
 {
+    ESP_LOGI(TAG, "=== API: device_info handler called ===");
+    
     usb_device_info_t info;
     esp_err_t ret = usb_get_device_info(&info);
     
@@ -800,6 +825,29 @@ static esp_err_t api_factory_reset_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// API handler: Simple reboot (no NVS erase)
+static esp_err_t api_reboot_handler(httpd_req_t *req)
+{
+    ESP_LOGW(TAG, "API: Reboot requested");
+    
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", "success");
+    cJSON_AddStringToObject(root, "message", "Rebooting...");
+    
+    const char *json_str = cJSON_Print(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+    
+    free((void *)json_str);
+    cJSON_Delete(root);
+    
+    // Trigger reboot after sending response
+    ESP_LOGW(TAG, "Rebooting in 500ms...");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    
+    return ESP_OK;
+}
 // Trigger handler - GET to check state, POST to set/clear
 // GET /api/trigger?id=xxx - returns trigger state
 // POST /api/trigger?id=xxx&state=true/false - sets or clears trigger
@@ -1138,6 +1186,7 @@ static esp_err_t api_endpoint_out_handler(httpd_req_t *req)
 // Root handler - serve embedded HTML
 static esp_err_t root_handler(httpd_req_t *req)
 {
+    ESP_LOGI(TAG, "=== ROOT: Serving index.html ===");
     const uint32_t index_html_len = index_html_end - index_html_start;
     
     httpd_resp_set_type(req, "text/html");
@@ -1369,6 +1418,13 @@ esp_err_t web_interface_start(void)
             .handler = api_factory_reset_handler
         };
         httpd_register_uri_handler(server, &api_factory_reset_uri);
+        
+        httpd_uri_t api_reboot_uri = {
+            .uri = "/api/reboot",
+            .method = HTTP_POST,
+            .handler = api_reboot_handler
+        };
+        httpd_register_uri_handler(server, &api_reboot_uri);
         
         httpd_uri_t api_stats_uri = {
             .uri = "/api/stats",

@@ -16,5 +16,5 @@ Thumbs.db
 *.log
 
 #Local testing
-chains/
+chains/priv/
 reference/

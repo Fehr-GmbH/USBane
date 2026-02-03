@@ -187,6 +187,133 @@ Request chains enable complex automation scenarios with powerful flow control:
 - Automate multi-stage exploitation chains
 - Validate device responses before proceeding
 
+## CSV Chain Format
+
+Request chains can be imported/exported as CSV files for sharing and version control.
+
+### Row Types
+
+| Type | Description |
+|------|-------------|
+| `control` | USB Control Transfer (EP0 SETUP packet) |
+| `bulk_in` | Bulk IN transfer (EP1-15) |
+| `bulk_out` | Bulk OUT transfer (EP1-15) |
+| `interrupt_in` | Interrupt IN transfer (EP1-15) |
+| `interrupt_out` | Interrupt OUT transfer (EP1-15) |
+| `waitfor` | Wait condition (button, webhook, GPIO, delay, USB reset) |
+| `action` | Action (HTTP, GPIO output, comment, copy, goto) |
+| `condition` | Conditional logic (if/then comparisons) |
+
+### Control Transfer Format
+
+```csv
+control,bmRequestType,bRequest,wValue,wIndex,wLength,packetSize,dataMode,dataBytes,deviceAddr,flags
+```
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `bmRequestType` | Request type bitmap | `0x80` (Device-to-Host) |
+| `bRequest` | Request code | `0x06` (GET_DESCRIPTOR) |
+| `wValue` | Request value | `0x0100` (Device Descriptor) |
+| `wIndex` | Request index | `0x0000` |
+| `wLength` | Expected response length | `18` |
+| `packetSize` | SETUP packet size (8=normal, >8=oversized) | `8` |
+| `dataMode` | `separate` (DATA OUT stage) or `append` (oversized SETUP) | `separate` |
+| `dataBytes` | Hex data for OUT transfers | `DEADBEEF` |
+| `deviceAddr` | USB device address (0=enumeration, 1-127=assigned) | `0` |
+| `flags` | Comma-separated: `noretry`, `setuponly`, `ep10` (dataStageEp=10) | `noretry` |
+
+### Bulk/Interrupt Transfer Formats
+
+```csv
+# Bulk IN
+bulk_in,endpoint,length,deviceAddr,timeout,continuous,maxAttempts
+
+# Bulk OUT
+bulk_out,endpoint,dataBytes,deviceAddr,timeout
+
+# Interrupt IN
+interrupt_in,endpoint,length,deviceAddr,timeout,continuous,maxAttempts
+
+# Interrupt OUT
+interrupt_out,endpoint,dataBytes,deviceAddr,timeout
+```
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `endpoint` | Endpoint number (1-15) | `10` |
+| `length` | Bytes to read (IN only) | `64` |
+| `deviceAddr` | USB device address | `1` |
+| `timeout` | Timeout in milliseconds | `1000` |
+| `continuous` | Polling mode: `1`/`0` | `0` |
+| `maxAttempts` | Max attempts for continuous mode | `10` |
+| `dataBytes` | Hex data (OUT only) | `AABBCCDD` |
+
+### Wait Conditions
+
+```csv
+waitfor,button,label
+waitfor,webhook,triggerId,timeout
+waitfor,gpio,pin,level,timeout
+waitfor,delay,duration
+waitfor,usb_reset,note
+```
+
+### Actions
+
+```csv
+action,http,url
+action,gpio_out,pin,level
+action,comment,text
+action,copy,source,fromReqNo,fromOffset,fromLength,toField,toReqNo
+action,goto,targetIndex
+```
+
+**Copy Action Fields**:
+| Field | Description | Example |
+|-------|-------------|---------|
+| `source` | Source of data: `responsehex` (response bytes) or `rxbytes` (byte count) | `responsehex` |
+| `fromReqNo` | Source request index (-1 = last executed) | `-1` |
+| `fromOffset` | Byte offset in source data | `2` |
+| `fromLength` | Bytes to copy (-1 = all from offset) | `2` |
+| `toField` | Target field: `wLength`, `wValue`, `wIndex`, `dataBytes`, etc. | `wLength` |
+| `toReqNo` | Target request index (-1 = next request) | `-1` |
+
+Note: Numeric fields (`wLength`, `wValue`, `wIndex`, etc.) are automatically converted from little-endian byte order.
+
+### Conditions
+
+```csv
+condition,valueASource,valueAReqNo,valueALength,operator,valueBSource,valueBValue,action
+```
+
+### Example Chain CSV
+
+```csv
+# Get Device Descriptor at address 0
+control,0x80,0x06,0x0100,0x0000,18,8,separate,,0,
+
+# SET_ADDRESS to assign address 1
+control,0x00,0x05,0x0001,0x0000,0,8,separate,,0,
+waitfor,delay,50
+
+# Get Config Descriptor header at address 1
+control,0x80,0x06,0x0200,0x0000,9,8,separate,,1,
+
+# Copy wTotalLength (bytes 2-3, little-endian) to wLength of next request
+action,copy,responsehex,-1,2,2,wLength,-1
+
+# Get full Config Descriptor with dynamic length
+control,0x80,0x06,0x0200,0x0000,0,8,separate,,1,
+
+# Read from interrupt endpoint 10
+interrupt_in,10,64,1,1000,0,1
+
+# Check if we got data
+condition,rxbytes,-1,-1,>,manual,0,continue
+action,comment,Device enumerated successfully
+```
+
 ## Project Structure
 
 ```

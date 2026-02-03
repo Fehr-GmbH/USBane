@@ -66,6 +66,9 @@ typedef struct {
     uint8_t *response_buffer;   // Buffer for response data (can be NULL)
     size_t response_buffer_size; // Size of response buffer
     size_t *bytes_received;     // Output: bytes actually received
+    
+    bool setup_only;            // If true, return immediately after SETUP ACK (skip DATA/STATUS)
+    uint8_t data_stage_ep;      // If >0, redirect DATA IN stage to this endpoint (e.g., 10 for EP10)
 } usb_packet_config_t;
 
 /**
@@ -150,7 +153,6 @@ esp_err_t usb_read_response(uint8_t *buffer, size_t max_len,
  * @brief Bulk/Interrupt IN transfer from any endpoint
  * 
  * Sends IN token to specified endpoint and receives data.
- * Used for non-control endpoint reads (e.g., exploit Phase 4).
  * 
  * @param endpoint Endpoint number (1-15, direction bit optional)
  * @param device_addr Device address
