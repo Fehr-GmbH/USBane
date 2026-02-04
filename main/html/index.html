@@ -804,10 +804,10 @@
                 
                 <div class='control'>
                     <label>Delay between requests (ms):</label>
-                    <input type='number' id='chain_delay' value='50' min='0' max='5000'>
+                    <input type='number' id='chain_delay' value='50' min='0' max='5000' style='width:80px;'>
                 </div>
                 <div style='display:flex;gap:10px;justify-content:center;margin-top:15px;'>
-                    <button onclick='executeChain()' id='chainExecBtn' style='background:#28a745;margin:0;'>Execute Chain</button>
+                    <button onclick='executeChainNative()' id='chainExecBtn' style='background:#28a745;margin:0;'>Execute Chain</button>
                     <button onclick='continueChain()' id='chainContinueBtn' style='background:#17a2b8;margin:0;display:none;'>Continue</button>
                     <button onclick='stopChain()' id='chainStopBtn' style='background:#dc3545;margin:0;display:none;'>Stop</button>
                 </div>

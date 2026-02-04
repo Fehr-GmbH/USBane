@@ -7,7 +7,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_system.h"
-#include "usb_malformed.h"
+#include "usbane.h"
 #include "wifi_ap.h"
 #include "web_interface.h"
 
@@ -48,7 +48,7 @@ void app_main(void)
     
     // Initialize USB Host hardware (via handler on Core 1)
     ESP_LOGI(TAG, "Initializing USB Host hardware...");
-    ret = usb_malformed_init();
+    ret = usbane_init();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "USB init returned: %s (continuing anyway)", esp_err_to_name(ret));
         // Don't return - keep running so web interface works and we can detect device later

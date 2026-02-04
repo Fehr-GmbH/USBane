@@ -4,7 +4,8 @@
  */
 
 #include "web_interface.h"
-#include "usb_malformed.h"
+#include "usbane.h"
+#include "chain_engine.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -14,15 +15,9 @@
 #include "cJSON.h"
 #include "driver/gpio.h"
 #include <string.h>
+#include <inttypes.h>
 
 // Web Interface Constants
-#define HTTP_QUERY_MAX_LEN          1024
-#define HTTP_DATA_BYTES_MAX_LEN     512
-#define HTTP_CUSTOM_DATA_MAX_LEN    248     // Same as USB_MAX_EXTRA_DATA
-#define HTTP_RESPONSE_BUFFER_SIZE   512
-#define HTTP_HEX_STR_MAX_LEN        384     // 128 bytes * 3
-#define HTTP_ASCII_STR_MAX_LEN      256
-#define HTTP_RESPONSE_MAX_BYTES     128
 
 static const char *TAG = "WEB_UI";
 static httpd_handle_t server = NULL;
@@ -35,6 +30,36 @@ static httpd_handle_t server = NULL;
 static char triggered_ids[MAX_TRIGGERS][TRIGGER_ID_MAX_LEN] = {0};
 static int triggered_count = 0;
 static portMUX_TYPE trigger_mutex = portMUX_INITIALIZER_UNLOCKED;
+
+// HTTP API helpers for synchronous execution
+static chain_result_t http_api_results[CHAIN_MAX_ENTRIES];
+static int http_api_result_count = 0;
+static esp_err_t http_api_final_result = ESP_OK;
+static SemaphoreHandle_t http_api_done_sem = NULL;
+
+// Forward declaration for stats update
+static void update_usb_stats(size_t bytes_rx, size_t bytes_tx);
+
+static void http_api_result_cb(int index, const chain_result_t *result, void *user_data) {
+    // Update USB stats for all USB transfer types
+    if (result->type <= CHAIN_TYPE_INTERRUPT_OUT) {
+        update_usb_stats(result->bytes_received, 8);
+    }
+    
+    if (index < CHAIN_MAX_ENTRIES) {
+        memcpy(&http_api_results[index], result, sizeof(chain_result_t));
+        if (index >= http_api_result_count) {
+            http_api_result_count = index + 1;
+        }
+    }
+}
+
+static void http_api_done_cb(esp_err_t result, void *user_data) {
+    http_api_final_result = result;
+    if (http_api_done_sem) {
+        xSemaphoreGive(http_api_done_sem);
+    }
+}
 
 // Performance tracking
 typedef struct {
@@ -62,26 +87,7 @@ static uint32_t last_total_runtime = 0;
 static uint32_t last_cpu_check_time = 0;
 
 // Forward declarations
-static void update_usb_stats(size_t bytes_rx, size_t bytes_tx);
 static void update_cpu_load(void);
-
-// Embedded files (from CMakeLists.txt EMBED_FILES)
-extern const uint8_t index_html_start[] asm("_binary_index_html_start");
-extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
-extern const uint8_t app_js_start[]     asm("_binary_app_js_start");
-extern const uint8_t app_js_end[]       asm("_binary_app_js_end");
-extern const uint8_t logo_svg_start[]   asm("_binary_logo_svg_start");
-extern const uint8_t logo_svg_end[]     asm("_binary_logo_svg_end");
-extern const uint8_t applogo_png_start[] asm("_binary_applogo_png_start");
-extern const uint8_t applogo_png_end[]   asm("_binary_applogo_png_end");
-extern const uint8_t apptext_svg_start[] asm("_binary_apptext_svg_start");
-extern const uint8_t apptext_svg_end[]   asm("_binary_apptext_svg_end");
-extern const uint8_t favicon_ico_start[] asm("_binary_favicon_ico_start");
-extern const uint8_t favicon_ico_end[]   asm("_binary_favicon_ico_end");
-extern const uint8_t api_html_start[]    asm("_binary_api_html_start");
-extern const uint8_t api_html_end[]      asm("_binary_api_html_end");
-extern const uint8_t openapi_json_start[] asm("_binary_openapi_json_start");
-extern const uint8_t openapi_json_end[]   asm("_binary_openapi_json_end");
 
 // Update performance statistics (thread-safe)
 static void update_usb_stats(size_t bytes_rx, size_t bytes_tx) {
@@ -108,6 +114,25 @@ static void update_usb_stats(size_t bytes_rx, size_t bytes_tx) {
     
     portEXIT_CRITICAL(&usb_stats_mutex);
 }
+
+// Embedded files (from CMakeLists.txt EMBED_FILES)
+extern const uint8_t index_html_start[] asm("_binary_index_html_start");
+extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
+extern const uint8_t app_js_start[]     asm("_binary_app_js_start");
+extern const uint8_t app_js_end[]       asm("_binary_app_js_end");
+extern const uint8_t logo_svg_start[]   asm("_binary_logo_svg_start");
+extern const uint8_t logo_svg_end[]     asm("_binary_logo_svg_end");
+extern const uint8_t applogo_png_start[] asm("_binary_applogo_png_start");
+extern const uint8_t applogo_png_end[]   asm("_binary_applogo_png_end");
+extern const uint8_t apptext_svg_start[] asm("_binary_apptext_svg_start");
+extern const uint8_t apptext_svg_end[]   asm("_binary_apptext_svg_end");
+extern const uint8_t favicon_ico_start[] asm("_binary_favicon_ico_start");
+extern const uint8_t favicon_ico_end[]   asm("_binary_favicon_ico_end");
+extern const uint8_t api_html_start[]    asm("_binary_api_html_start");
+extern const uint8_t api_html_end[]      asm("_binary_api_html_end");
+extern const uint8_t openapi_json_start[] asm("_binary_openapi_json_start");
+extern const uint8_t openapi_json_end[]   asm("_binary_openapi_json_end");
+
 
 // Update CPU load statistics using REAL FreeRTOS runtime stats
 // Based on: https://github.com/espressif/esp-idf/blob/master/examples/system/freertos/real_time_stats
@@ -202,280 +227,240 @@ static void update_cpu_load(void) {
     last_cpu_check_time = current_time;
 }
 
-// API handler: Send USB request
-static esp_err_t api_send_request_handler(httpd_req_t *req)
+// API handler: Single USB request (control, bulk, or interrupt - uses executor on Core 1)
+// POST /api/single_request?type=control&bmRequestType=0x80&bRequest=0x06...
+// POST /api/single_request?type=bulk_in&ep=1&len=64&addr=0...
+// POST /api/single_request?type=bulk_out&ep=1&data=AABBCC...
+static esp_err_t api_single_request_handler(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "=== API: send_request handler called ===");
+    ESP_LOGI(TAG, "=== API: single_request handler called ===");
     
-    static char query[HTTP_QUERY_MAX_LEN];
-    static char dataBytes_str[HTTP_DATA_BYTES_MAX_LEN];
-    static uint8_t customData[HTTP_CUSTOM_DATA_MAX_LEN];
+    // Check if executor is busy
+    if (usb_executor_is_busy()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Executor busy\"}");
+        return ESP_OK;
+    }
     
-    // CRITICAL: Clear static buffers to prevent stale data contamination
-    memset(dataBytes_str, 0, sizeof(dataBytes_str));
-    memset(customData, 0, sizeof(customData));
+    // Parse query parameters - initialize with defaults
+    usb_job_single_t params = {0};
+    params.type = USB_TRANSFER_CONTROL;  // Default to control transfer
+    params.bmRequestType = 0x80;
+    params.bRequest = 0x06;
+    params.wValue = 0x0100;
+    params.wIndex = 0x0000;
+    params.wLength = 18;
+    params.packetSize = 8;
+    params.deviceAddr = 0;
+    params.timeout = 1000;
+    params.endpoint = 1;
+    params.channel = 1;
+    params.dataLen = 64;  // Default length for IN transfers
     
+    static char query[512];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        char bmRequestType_str[16], bRequest_str[16], wValue_str[16], wIndex_str[16], wLength_str[16];
-        char packetSize_str[16], maxRetries_str[16], dataMode_str[16], timeout_str[16], deviceAddr_str[16];
-        char dataStageEp_str[16];
-        char setupOnly_str[16];
-        uint8_t bmRequestType = 0x80;
-        uint8_t bRequest = 0x06;
-        uint16_t wValue = 0x0100;
-        uint16_t wIndex = 0x0000;
-        uint16_t wLength = 18;
-        size_t packetSize = 8;
-        int maxRetries = -1;
-        uint32_t timeout_ms = USB_DEFAULT_TIMEOUT_MS;
-        uint8_t deviceAddr = 0;  // Default: address 0
-        uint8_t dataStageEp = 0;  // Default: same EP (0=EP0), >0=redirect DATA stage IN tokens to this EP
-        bool setupOnly = false;   // Default: complete transfer. If true: return after SETUP ACK (skip DATA stage)
-        bool hasCustomData = false;
-        size_t customDataLen = 0;
-        bool dataMode_append = false;  // Default: separate DATA OUT stage
+        char val[64];
         
-        if (httpd_query_key_value(query, "bmRequestType", bmRequestType_str, sizeof(bmRequestType_str)) == ESP_OK) {
-            bmRequestType = (uint8_t)strtol(bmRequestType_str, NULL, 0);
-        }
-        if (httpd_query_key_value(query, "bRequest", bRequest_str, sizeof(bRequest_str)) == ESP_OK) {
-            bRequest = (uint8_t)strtol(bRequest_str, NULL, 0);
-        }
-        if (httpd_query_key_value(query, "wValue", wValue_str, sizeof(wValue_str)) == ESP_OK) {
-            wValue = (uint16_t)strtol(wValue_str, NULL, 0);
-        }
-        if (httpd_query_key_value(query, "wIndex", wIndex_str, sizeof(wIndex_str)) == ESP_OK) {
-            wIndex = (uint16_t)strtol(wIndex_str, NULL, 0);
-        }
-        if (httpd_query_key_value(query, "wLength", wLength_str, sizeof(wLength_str)) == ESP_OK) {
-            wLength = (uint16_t)atoi(wLength_str);
-        }
-        if (httpd_query_key_value(query, "packetSize", packetSize_str, sizeof(packetSize_str)) == ESP_OK) {
-            packetSize = (size_t)atoi(packetSize_str);
-            // Validate: packet_size 0 would hang the USB controller
-            if (packetSize <= 0) {
-                cJSON *root = cJSON_CreateObject();
-                cJSON_AddStringToObject(root, "status", "failed");
-                cJSON_AddStringToObject(root, "data", "ERROR: packetSize <= 0 is invalid");
-                cJSON_AddStringToObject(root, "ascii", "");
-                cJSON_AddNumberToObject(root, "bytes_received", 0);
-                const char *json_str = cJSON_Print(root);
-                httpd_resp_set_type(req, "application/json");
-                httpd_resp_sendstr(req, json_str);
-                free((void *)json_str);
-                cJSON_Delete(root);
-                return ESP_OK;
-            }
-        }
-        if (httpd_query_key_value(query, "maxRetries", maxRetries_str, sizeof(maxRetries_str)) == ESP_OK) {
-            maxRetries = atoi(maxRetries_str);
-        }
-        if (httpd_query_key_value(query, "dataStageEp", dataStageEp_str, sizeof(dataStageEp_str)) == ESP_OK) {
-            dataStageEp = (uint8_t)atoi(dataStageEp_str);
-            if (dataStageEp > 0) {
-                ESP_LOGI(TAG, "DATA stage redirect: EP%d", dataStageEp);
-            }
-        }
-        if (httpd_query_key_value(query, "setupOnly", setupOnly_str, sizeof(setupOnly_str)) == ESP_OK) {
-            setupOnly = (atoi(setupOnly_str) != 0) || (strcmp(setupOnly_str, "true") == 0);
-            if (setupOnly) {
-                ESP_LOGI(TAG, "setup_only mode: will skip DATA stage");
-            }
-        }
-        if (httpd_query_key_value(query, "timeout", timeout_str, sizeof(timeout_str)) == ESP_OK) {
-            timeout_ms = (uint32_t)atoi(timeout_str);
-            if (timeout_ms < 10) timeout_ms = 10;    // Minimum 10ms
-            if (timeout_ms > 30000) timeout_ms = 30000;  // Maximum 30s
-        }
-        if (httpd_query_key_value(query, "dataMode", dataMode_str, sizeof(dataMode_str)) == ESP_OK) {
-            dataMode_append = (strcmp(dataMode_str, "append") == 0);
-        }
-        if (httpd_query_key_value(query, "deviceAddr", deviceAddr_str, sizeof(deviceAddr_str)) == ESP_OK) {
-            deviceAddr = (uint8_t)atoi(deviceAddr_str);
-        }
-        
-        // Parse custom DATA bytes (hex string like "41 42 43 AA BB CC" or "AABBCC")
-        if (httpd_query_key_value(query, "dataBytes", dataBytes_str, sizeof(dataBytes_str)) == ESP_OK) {
-            if (strlen(dataBytes_str) > 0) {
-                hasCustomData = true;
-                
-                // Check if it's space/comma separated or continuous hex
-                if (strchr(dataBytes_str, ' ') != NULL || strchr(dataBytes_str, ',') != NULL) {
-                    // Space or comma separated: "41 42 43" or "41,42,43"
-                char *token = strtok(dataBytes_str, " ,");
-                while (token != NULL && customDataLen < sizeof(customData)) {
-                    customData[customDataLen++] = (uint8_t)strtol(token, NULL, 16);
-                    token = strtok(NULL, " ,");
-                    }
-                } else {
-                    // Continuous hex string: "AABBCCDD" (2 chars per byte)
-                    size_t len = strlen(dataBytes_str);
-                    for (size_t i = 0; i + 1 < len && customDataLen < sizeof(customData); i += 2) {
-                        char byte_str[3] = {dataBytes_str[i], dataBytes_str[i+1], '\0'};
-                        customData[customDataLen++] = (uint8_t)strtol(byte_str, NULL, 16);
-                    }
-                }
-                ESP_LOGI(TAG, "Custom DATA: %d bytes", customDataLen);
-                // Debug: Log the parsed custom data bytes
-                if (customDataLen > 0) {
-                    ESP_LOG_BUFFER_HEX_LEVEL(TAG, customData, customDataLen, ESP_LOG_INFO);
-                }
+        // Parse transfer type first
+        if (httpd_query_key_value(query, "type", val, sizeof(val)) == ESP_OK) {
+            if (strcmp(val, "control") == 0) {
+                params.type = USB_TRANSFER_CONTROL;
+            } else if (strcmp(val, "bulk_in") == 0) {
+                params.type = USB_TRANSFER_BULK_IN;
+            } else if (strcmp(val, "bulk_out") == 0) {
+                params.type = USB_TRANSFER_BULK_OUT;
+            } else if (strcmp(val, "interrupt_in") == 0) {
+                params.type = USB_TRANSFER_INTERRUPT_IN;
+            } else if (strcmp(val, "interrupt_out") == 0) {
+                params.type = USB_TRANSFER_INTERRUPT_OUT;
             }
         }
         
-        ESP_LOGI(TAG, "API: USB Request - bmRequestType=0x%02x, bRequest=0x%02x, wValue=0x%04x, wIndex=0x%04x, wLength=%d, packetSize=%d, maxRetries=%d, timeout=%ldms", 
-                 bmRequestType, bRequest, wValue, wIndex, wLength, packetSize, maxRetries, timeout_ms);
-        
-        // Note: Auto-reset is handled internally by usbane.c when control pipe isn't allocated
-        
-        // Create packet config
-        usb_packet_config_t config = usb_packet_config_default();
-        config.bmRequestType = bmRequestType;
-        config.bRequest = bRequest;
-        config.wValue = wValue;
-        config.wIndex = wIndex;
-        config.wLength = wLength;
-        config.device_addr = deviceAddr;
-        config.packet_size = packetSize;
-        config.max_nak_retries = maxRetries;
-        config.timeout_ms = timeout_ms;
-        config.data_stage_ep = dataStageEp;
-        config.setup_only = setupOnly;
-        
-        // Allocate response buffer (static to avoid stack overflow)
-        static uint8_t response_buffer[HTTP_RESPONSE_BUFFER_SIZE];
-        size_t bytes_received = 0;
-        
-        config.response_buffer = response_buffer;
-        config.response_buffer_size = sizeof(response_buffer);
-        config.bytes_received = &bytes_received;
-        
-        // Handle custom data based on mode
-        if (hasCustomData && customDataLen > 0) {
-            if (dataMode_append) {
-                // Mode: Append to SETUP (oversized packet attack)
-                // Increase packet size to include custom data
-                packetSize = USB_SETUP_PACKET_SIZE + customDataLen;
-                if (packetSize > USB_MAX_PACKET_SIZE) {
-                    packetSize = USB_MAX_PACKET_SIZE;
-                    customDataLen = USB_MAX_PACKET_SIZE - USB_SETUP_PACKET_SIZE;
-                }
-                memcpy(config.extra_data, customData, customDataLen);
-                config.packet_size = packetSize;
-                ESP_LOGI(TAG, "Mode: APPEND - Oversized SETUP packet: %d bytes (8 + %d)", packetSize, customDataLen);
-                // Debug: Verify extra_data after copy
-                ESP_LOGI(TAG, "extra_data after copy:");
-                ESP_LOG_BUFFER_HEX_LEVEL(TAG, config.extra_data, customDataLen, ESP_LOG_INFO);
-            } else {
-                // Mode: Separate DATA OUT stage (normal USB protocol)
-                // Keep packet size at 8, send custom data as separate DATA OUT transaction
-                packetSize = USB_SETUP_PACKET_SIZE;
-                memcpy(config.extra_data, customData, customDataLen);
-                config.packet_size = packetSize;
-                // Update wLength to match actual data being sent
-                if (wLength < customDataLen) {
-                    wLength = customDataLen;
-                    config.wLength = wLength;
-                }
-                ESP_LOGI(TAG, "Mode: SEPARATE - DATA OUT stage: %d bytes (wLength=%d)", customDataLen, wLength);
-            }
-        } else if (packetSize > USB_SETUP_PACKET_SIZE) {
-            // Oversized packet without custom data - use auto-pattern
-            size_t extraDataLen = packetSize - USB_SETUP_PACKET_SIZE;
-            if (extraDataLen > USB_MAX_EXTRA_DATA) {
-                extraDataLen = USB_MAX_EXTRA_DATA;
-            }
-            for (size_t i = 0; i < extraDataLen; i++) {
-                config.extra_data[i] = 0xAA + (i % 8);
-            }
-            ESP_LOGI(TAG, "Auto-pattern oversized SETUP: %d bytes", packetSize);
+        // Common parameters
+        if (httpd_query_key_value(query, "addr", val, sizeof(val)) == ESP_OK)
+            params.deviceAddr = (uint8_t)atoi(val);
+        if (httpd_query_key_value(query, "deviceAddr", val, sizeof(val)) == ESP_OK)
+            params.deviceAddr = (uint8_t)atoi(val);
+        if (httpd_query_key_value(query, "timeout", val, sizeof(val)) == ESP_OK) {
+            params.timeout = (uint32_t)atoi(val);
+            if (params.timeout < 10) params.timeout = 10;
+            if (params.timeout > 30000) params.timeout = 30000;
         }
         
-        // Send USB packet (handler on Core 1 will execute it)
-        esp_err_t ret = usb_send_packet(&config);
-        
-        // Update stats
-        size_t bytes_tx = config.packet_size;
-        if (config.wLength > 0 && (config.bmRequestType & 0x80) == 0) {
-            bytes_tx += config.wLength;
+        // Control transfer parameters
+        if (httpd_query_key_value(query, "bmRequestType", val, sizeof(val)) == ESP_OK)
+            params.bmRequestType = (uint8_t)strtol(val, NULL, 0);
+        if (httpd_query_key_value(query, "bRequest", val, sizeof(val)) == ESP_OK)
+            params.bRequest = (uint8_t)strtol(val, NULL, 0);
+        if (httpd_query_key_value(query, "wValue", val, sizeof(val)) == ESP_OK)
+            params.wValue = (uint16_t)strtol(val, NULL, 0);
+        if (httpd_query_key_value(query, "wIndex", val, sizeof(val)) == ESP_OK)
+            params.wIndex = (uint16_t)strtol(val, NULL, 0);
+        if (httpd_query_key_value(query, "wLength", val, sizeof(val)) == ESP_OK)
+            params.wLength = (uint16_t)atoi(val);
+        if (httpd_query_key_value(query, "packetSize", val, sizeof(val)) == ESP_OK) {
+            params.packetSize = (uint8_t)atoi(val);
+            if (params.packetSize == 0) params.packetSize = 8;
         }
-        update_usb_stats(bytes_received, bytes_tx);
+        if (httpd_query_key_value(query, "dataStageEp", val, sizeof(val)) == ESP_OK)
+            params.dataStageEp = (uint8_t)atoi(val);
+        if (httpd_query_key_value(query, "setupOnly", val, sizeof(val)) == ESP_OK)
+            params.setupOnly = (atoi(val) != 0) || (strcmp(val, "true") == 0);
         
-        // Log response
-        if (ret == ESP_OK && bytes_received > 0) {
-            ESP_LOGI(TAG, "Received %d bytes:", bytes_received);
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, response_buffer, bytes_received, ESP_LOG_INFO);
-        } else {
-            ESP_LOGW(TAG, "No response received (ret=%s, bytes=%d)", esp_err_to_name(ret), bytes_received);
+        // Endpoint transfer parameters
+        if (httpd_query_key_value(query, "ep", val, sizeof(val)) == ESP_OK)
+            params.endpoint = (uint8_t)atoi(val);
+        if (httpd_query_key_value(query, "channel", val, sizeof(val)) == ESP_OK)
+            params.channel = (uint8_t)atoi(val);
+        if (httpd_query_key_value(query, "len", val, sizeof(val)) == ESP_OK)
+            params.dataLen = (uint16_t)atoi(val);
+        if (httpd_query_key_value(query, "continuous", val, sizeof(val)) == ESP_OK)
+            params.continuous = (atoi(val) != 0);
+        if (httpd_query_key_value(query, "max_attempts", val, sizeof(val)) == ESP_OK)
+            params.maxAttempts = (uint32_t)atoi(val);
+        
+        // Parse data bytes (hex string) - for OUT transfers and control with data
+        static char dataBytes_str[512];
+        if (httpd_query_key_value(query, "data", dataBytes_str, sizeof(dataBytes_str)) == ESP_OK && strlen(dataBytes_str) > 0) {
+            params.dataLen = 0;  // Reset for OUT transfers
+            const char *hex = dataBytes_str;
+            while (*hex && params.dataLen < sizeof(params.data)) {
+                while (*hex == ' ' || *hex == ',') hex++;
+                if (!*hex) break;
+                char byte_str[3] = {hex[0], hex[1] ? hex[1] : 0, 0};
+                params.data[params.dataLen++] = (uint8_t)strtoul(byte_str, NULL, 16);
+                hex += byte_str[1] ? 2 : 1;
+            }
         }
-        
-        // Build JSON response with received data
-        cJSON *root = cJSON_CreateObject();
-        cJSON_AddStringToObject(root, "status", ret == ESP_OK ? "success" : "failed");
-        cJSON_AddNumberToObject(root, "bmRequestType", bmRequestType);
-        cJSON_AddNumberToObject(root, "bRequest", bRequest);
-        cJSON_AddNumberToObject(root, "wValue", wValue);
-        cJSON_AddNumberToObject(root, "wIndex", wIndex);
-        cJSON_AddNumberToObject(root, "wLength", wLength);
-        cJSON_AddNumberToObject(root, "packet_size", packetSize);
-        cJSON_AddNumberToObject(root, "max_retries", maxRetries);
-        cJSON_AddNumberToObject(root, "bytes_received", bytes_received);
-        cJSON_AddBoolToObject(root, "connected", usb_is_device_connected());
-        
-        // Add hex dump and ASCII string of response data
-        static char hex_str[HTTP_HEX_STR_MAX_LEN];
-        static char ascii_str[HTTP_ASCII_STR_MAX_LEN];
-        if (bytes_received > 0) {
-            size_t hex_len = 0;
-            size_t ascii_len = 0;
-            size_t max_bytes = bytes_received > HTTP_RESPONSE_MAX_BYTES ? HTTP_RESPONSE_MAX_BYTES : bytes_received;
-            
-            // Build hex dump
-            for (size_t i = 0; i < max_bytes; i++) {
-                hex_len += sprintf(hex_str + hex_len, "%02x ", response_buffer[i]);
+    }
+    
+    // Log based on type
+    const char *type_str[] = {"control", "bulk_in", "bulk_out", "interrupt_in", "interrupt_out"};
+    if (params.type == USB_TRANSFER_CONTROL) {
+        ESP_LOGI(TAG, "Single %s: bmRT=0x%02x bReq=0x%02x wVal=0x%04x wIdx=0x%04x wLen=%d",
+                 type_str[params.type], params.bmRequestType, params.bRequest, params.wValue, params.wIndex, params.wLength);
+    } else {
+        ESP_LOGI(TAG, "Single %s: ep=%d addr=%d len=%d timeout=%"PRIu32"",
+                 type_str[params.type], params.endpoint, params.deviceAddr, params.dataLen, params.timeout);
+    }
+    
+    // Build CSV line from params (single request = chain with 1 entry)
+    char csv[512];
+    int csv_len = 0;
+    
+    switch (params.type) {
+        case USB_TRANSFER_CONTROL:
+            csv_len = snprintf(csv, sizeof(csv), "control,0x%02x,0x%02x,0x%04x,0x%04x,%d,%d,%d,%d",
+                params.bmRequestType, params.bRequest, params.wValue, params.wIndex,
+                params.wLength, params.packetSize, params.deviceAddr, params.dataStageEp);
+            break;
+        case USB_TRANSFER_BULK_IN:
+            csv_len = snprintf(csv, sizeof(csv), "bulk_in,%d,%d,%"PRIu32",%d,%d",
+                params.endpoint, params.dataLen, params.timeout, params.deviceAddr, params.channel);
+            break;
+        case USB_TRANSFER_BULK_OUT: {
+            csv_len = snprintf(csv, sizeof(csv), "bulk_out,%d,", params.endpoint);
+            // Append data bytes as hex
+            for (int i = 0; i < params.dataLen && csv_len < (int)sizeof(csv) - 10; i++) {
+                csv_len += snprintf(csv + csv_len, sizeof(csv) - csv_len, "%02X", params.data[i]);
             }
-            if (bytes_received > HTTP_RESPONSE_MAX_BYTES) {
-                sprintf(hex_str + hex_len, "... (%d more)", bytes_received - HTTP_RESPONSE_MAX_BYTES);
+            csv_len += snprintf(csv + csv_len, sizeof(csv) - csv_len, ",%"PRIu32",%d,%d",
+                params.timeout, params.deviceAddr, params.channel);
+            break;
+        }
+        case USB_TRANSFER_INTERRUPT_IN:
+            csv_len = snprintf(csv, sizeof(csv), "interrupt_in,%d,%d,%"PRIu32",%d,%d",
+                params.endpoint, params.dataLen, params.timeout, params.deviceAddr, params.channel);
+            break;
+        case USB_TRANSFER_INTERRUPT_OUT: {
+            csv_len = snprintf(csv, sizeof(csv), "interrupt_out,%d,", params.endpoint);
+            for (int i = 0; i < params.dataLen && csv_len < (int)sizeof(csv) - 10; i++) {
+                csv_len += snprintf(csv + csv_len, sizeof(csv) - csv_len, "%02X", params.data[i]);
             }
-            
-            // Build ASCII string (printable chars only, others shown as '.')
-            for (size_t i = 0; i < max_bytes; i++) {
-                char c = response_buffer[i];
-                ascii_str[ascii_len++] = (c >= 32 && c <= 126) ? c : '.';
+            csv_len += snprintf(csv + csv_len, sizeof(csv) - csv_len, ",%"PRIu32",%d,%d",
+                params.timeout, params.deviceAddr, params.channel);
+            break;
+        }
+    }
+    
+    ESP_LOGI(TAG, "API single as chain: %s", csv);
+    
+    // Initialize semaphore for blocking wait
+    if (!http_api_done_sem) {
+        http_api_done_sem = xSemaphoreCreateBinary();
+    }
+    
+    // Reset result storage
+    http_api_result_count = 0;
+    http_api_final_result = ESP_OK;
+    xSemaphoreTake(http_api_done_sem, 0);
+    
+    // Copy CSV to heap (executor will free it)
+    char *csv_copy = strdup(csv);
+    if (!csv_copy) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Out of memory\"}");
+        return ESP_OK;
+    }
+    
+    // Submit as chain - unified path!
+    esp_err_t submit_ret = usb_executor_submit_chain(csv_copy, csv_len, http_api_result_cb, NULL, http_api_done_cb, NULL);
+    
+    if (submit_ret != ESP_OK) {
+        free(csv_copy);
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Failed to submit job\"}");
+        return ESP_OK;
+    }
+    
+    // Wait for completion (max 30 seconds)
+    if (xSemaphoreTake(http_api_done_sem, pdMS_TO_TICKS(30000)) != pdTRUE) {
+        usb_executor_stop();
+        httpd_resp_set_status(req, "504 Gateway Timeout");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Execution timeout\"}");
+        return ESP_OK;
+    }
+    
+    // Build response from result
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", (http_api_result_count > 0 && http_api_results[0].status == 0) ? "success" : "failed");
+    cJSON_AddNumberToObject(root, "bytes_received", http_api_result_count > 0 ? http_api_results[0].bytes_received : 0);
+    
+    if (http_api_result_count > 0 && http_api_results[0].data_len > 0) {
+        size_t data_len = http_api_results[0].data_len;
+        char *hex_str = malloc(data_len * 3 + 1);
+        char *ascii_str = malloc(data_len + 1);
+        if (hex_str && ascii_str) {
+            for (size_t i = 0; i < data_len; i++) {
+                sprintf(hex_str + i * 3, "%02x ", http_api_results[0].data[i]);
+                char c = http_api_results[0].data[i];
+                ascii_str[i] = (c >= 32 && c <= 126) ? c : '.';
             }
-            ascii_str[ascii_len] = '\0';
-            
+            hex_str[data_len * 3] = '\0';
+            ascii_str[data_len] = '\0';
             cJSON_AddStringToObject(root, "data", hex_str);
             cJSON_AddStringToObject(root, "ascii", ascii_str);
-        } else if (ret == ESP_OK) {
-            // 0-byte response but success (e.g. SET_INTERFACE)
-            cJSON_AddStringToObject(root, "data", "");
-            cJSON_AddStringToObject(root, "ascii", "");
-        } else {
-            // Actual failure - include error type
-            const char *error_str;
-            switch (ret) {
-                case ESP_ERR_TIMEOUT:      error_str = "TIMEOUT"; break;
-                case ESP_ERR_INVALID_RESPONSE: error_str = "NAK"; break;
-                case ESP_FAIL:             error_str = "ERROR"; break;
-                default:                   error_str = "FAILED"; break;
-            }
-            cJSON_AddStringToObject(root, "data", error_str);
-            cJSON_AddStringToObject(root, "ascii", "");
+            free(hex_str);
+            free(ascii_str);
         }
-        
-        const char *json_str = cJSON_Print(root);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, json_str);
-        
-        free((void *)json_str);
-        cJSON_Delete(root);
+    } else {
+        cJSON_AddStringToObject(root, "data", "");
+        cJSON_AddStringToObject(root, "ascii", "");
     }
+    
+    const char *json_str = cJSON_Print(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+    free((void *)json_str);
+    cJSON_Delete(root);
     
     return ESP_OK;
 }
 
-// API handler: Send oversized packet
 // API handler: Connection status
 static esp_err_t api_status_handler(httpd_req_t *req)
 {
@@ -513,6 +498,11 @@ static esp_err_t api_stats_handler(httpd_req_t *req)
 {
     // Update CPU load before reading stats
     update_cpu_load();
+    
+    // Debug: Log raw stats values
+    ESP_LOGD(TAG, "Stats: req=%"PRIu32" rx=%"PRIu32" tx=%"PRIu32" cpu0=%d cpu1=%d",
+             usb_stats.requests_last_second, usb_stats.bytes_rx_last_second,
+             usb_stats.bytes_tx_last_second, usb_stats.cpu_core0_load, usb_stats.cpu_core1_load);
     
     // Read stats atomically
     portENTER_CRITICAL(&usb_stats_mutex);
@@ -995,188 +985,649 @@ static esp_err_t api_gpio_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-// API handler: Bulk/Interrupt IN from any endpoint
-// GET /api/endpoint_in?ep=10&addr=0&len=64&timeout=1000&type=bulk|interrupt
-static esp_err_t api_endpoint_in_handler(httpd_req_t *req)
-{
-    char query[512];
-    char ep_str[8] = "10";
-    char addr_str[8] = "0";
-    char len_str[8] = "64";
-    char timeout_str[16] = "1000";
-    char type_str[16] = "bulk";
-    char channel_str[8] = "1";
-    char continuous_str[8] = "0";
-    char max_attempts_str[16] = "10";
+// ============================================================================
+// HTTP API: Chain Execution (POST /api/chain with CSV body)
+// ============================================================================
 
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        httpd_query_key_value(query, "ep", ep_str, sizeof(ep_str));
-        httpd_query_key_value(query, "addr", addr_str, sizeof(addr_str));
-        httpd_query_key_value(query, "len", len_str, sizeof(len_str));
-        httpd_query_key_value(query, "timeout", timeout_str, sizeof(timeout_str));
-        httpd_query_key_value(query, "type", type_str, sizeof(type_str));
-        httpd_query_key_value(query, "channel", channel_str, sizeof(channel_str));
-        httpd_query_key_value(query, "continuous", continuous_str, sizeof(continuous_str));
-        httpd_query_key_value(query, "max_attempts", max_attempts_str, sizeof(max_attempts_str));
+// POST /api/chain - Execute chain from CSV body, return JSON results
+static esp_err_t api_chain_http_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "=== API: chain HTTP handler called ===");
+    
+    // Check if executor is busy
+    if (usb_executor_is_busy()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Executor busy\"}");
+        return ESP_OK;
     }
     
-    uint8_t endpoint = (uint8_t)atoi(ep_str);
-    uint8_t device_addr = (uint8_t)atoi(addr_str);
-    uint8_t channel = (uint8_t)atoi(channel_str);
-    bool continuous = (atoi(continuous_str) != 0);
-    uint32_t max_attempts = (uint32_t)atoi(max_attempts_str);
-    size_t max_len = (size_t)atoi(len_str);
-    uint32_t timeout_ms = (uint32_t)atoi(timeout_str);
-
-    // Clamp values
-    if (endpoint > 15) endpoint = 15;
-    if (channel > 15) channel = 1;  // Default to 1 if invalid
-    if (max_attempts == 0) max_attempts = 10;  // Default 10 attempts
-    if (max_attempts > 1000 && max_attempts != -1) max_attempts = 1000;  // Cap at 1000, but allow -1
-    if (max_len > 256) max_len = 256;
-    if (max_len == 0) max_len = 64;
-    if (timeout_ms == 0) timeout_ms = continuous ? 500 : 1000;  // Shorter timeout for continuous
-    
-    usb_endpoint_type_t ep_type =
-        (strcasecmp(type_str, "interrupt") == 0 || strcasecmp(type_str, "intr") == 0)
-            ? USB_EP_TYPE_INTERRUPT
-            : USB_EP_TYPE_BULK;
-
-    ESP_LOGI(TAG, "API: Endpoint IN - EP%d, addr=%d, chan=%d, len=%zu, timeout=%ld, type=%s%s",
-             endpoint, device_addr, channel, max_len, timeout_ms, type_str,
-             continuous ? ", continuous" : "");
-
-    static uint8_t rx_buffer[256];
-    size_t bytes_received = 0;
-
-    esp_err_t ret;
-    if (continuous) {
-        ret = usb_endpoint_in_continuous(endpoint, device_addr, ep_type, channel, rx_buffer, max_len,
-                                        max_attempts, timeout_ms, &bytes_received);
-    } else {
-        ret = usb_endpoint_in(endpoint, device_addr, ep_type, channel, rx_buffer, max_len,
-                             timeout_ms, &bytes_received);
+    // Read CSV body
+    size_t content_len = req->content_len;
+    if (content_len == 0 || content_len > 32768) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Invalid content length\"}");
+        return ESP_OK;
     }
     
-    // Update stats
-    update_usb_stats(bytes_received, 0);
+    char *csv_data = malloc(content_len + 1);
+    if (!csv_data) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Out of memory\"}");
+        return ESP_OK;
+    }
     
-    // Build JSON response
+    int received = httpd_req_recv(req, csv_data, content_len);
+    if (received != content_len) {
+        free(csv_data);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Failed to read body\"}");
+        return ESP_OK;
+    }
+    csv_data[content_len] = '\0';
+    
+    // Initialize semaphore
+    if (!http_api_done_sem) {
+        http_api_done_sem = xSemaphoreCreateBinary();
+    }
+    
+    // Reset result storage
+    http_api_result_count = 0;
+    http_api_final_result = ESP_OK;
+    xSemaphoreTake(http_api_done_sem, 0);  // Clear any stale signal
+    
+    // Submit chain job
+    esp_err_t submit_ret = usb_executor_submit_chain(
+        csv_data, content_len,
+        http_api_result_cb,
+        NULL,  // No wait callback for HTTP API
+        http_api_done_cb,
+        NULL
+    );
+    free(csv_data);
+    
+    if (submit_ret != ESP_OK) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Failed to submit job\"}");
+        return ESP_OK;
+    }
+    
+    // Wait for completion (max 60 seconds)
+    if (xSemaphoreTake(http_api_done_sem, pdMS_TO_TICKS(60000)) != pdTRUE) {
+        usb_executor_stop();
+        httpd_resp_set_status(req, "504 Gateway Timeout");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Execution timeout\"}");
+        return ESP_OK;
+    }
+    
+    // Build response JSON
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "status", ret == ESP_OK ? "success" : "failed");
-    cJSON_AddNumberToObject(root, "endpoint", endpoint);
-    cJSON_AddNumberToObject(root, "device_addr", device_addr);
-    cJSON_AddNumberToObject(root, "bytes_received", bytes_received);
-    cJSON_AddStringToObject(root, "ep_type", ep_type == USB_EP_TYPE_INTERRUPT ? "interrupt" : "bulk");
+    cJSON_AddStringToObject(root, "status", http_api_final_result == ESP_OK ? "success" : "error");
+    cJSON_AddNumberToObject(root, "entries_executed", http_api_result_count);
     
-    if (bytes_received > 0) {
-        // Build hex dump
-        static char hex_str[768];  // 256 * 3 chars
-        size_t hex_len = 0;
-        for (size_t i = 0; i < bytes_received && i < 256; i++) {
-            hex_len += sprintf(hex_str + hex_len, "%02x ", rx_buffer[i]);
-        }
-        cJSON_AddStringToObject(root, "data", hex_str);
+    cJSON *results = cJSON_CreateArray();
+    for (int i = 0; i < http_api_result_count && i < 64; i++) {
+        cJSON *entry = cJSON_CreateObject();
+        cJSON_AddNumberToObject(entry, "i", i);
+        cJSON_AddNumberToObject(entry, "t", http_api_results[i].type);
+        cJSON_AddNumberToObject(entry, "s", http_api_results[i].status);
+        cJSON_AddNumberToObject(entry, "b", http_api_results[i].bytes_received);
         
-        // ASCII representation
-        static char ascii_str[257];
-        for (size_t i = 0; i < bytes_received && i < 256; i++) {
-            char c = rx_buffer[i];
-            ascii_str[i] = (c >= 32 && c <= 126) ? c : '.';
+        if (http_api_results[i].data_len > 0 && http_api_results[i].data_len <= 64) {
+            char hex_str[129];
+            for (size_t j = 0; j < http_api_results[i].data_len && j < 64; j++) {
+                sprintf(hex_str + j * 2, "%02X", http_api_results[i].data[j]);
+            }
+            hex_str[http_api_results[i].data_len * 2] = '\0';
+            cJSON_AddStringToObject(entry, "d", hex_str);
         }
-        ascii_str[bytes_received > 256 ? 256 : bytes_received] = '\0';
-        cJSON_AddStringToObject(root, "ascii", ascii_str);
-    } else {
-        const char *error_str;
-        switch (ret) {
-            case ESP_ERR_TIMEOUT:          error_str = "TIMEOUT"; break;
-            case ESP_ERR_INVALID_RESPONSE: error_str = "STALL"; break;
-            default:                       error_str = "ERROR"; break;
-        }
-        cJSON_AddStringToObject(root, "data", error_str);
-        cJSON_AddStringToObject(root, "ascii", "");
+        
+        cJSON_AddItemToArray(results, entry);
     }
+    cJSON_AddItemToObject(root, "results", results);
     
     const char *json_str = cJSON_Print(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json_str);
-    
     free((void *)json_str);
     cJSON_Delete(root);
     
     return ESP_OK;
 }
 
-// API handler: Bulk/Interrupt OUT to any endpoint
-// POST /api/endpoint_out?ep=10&addr=0&data=AABBCC...&type=bulk|interrupt
-static esp_err_t api_endpoint_out_handler(httpd_req_t *req)
-{
-    char query[512];
-    char ep_str[8] = "10";
-    char addr_str[8] = "0";
-    char data_str[512] = "";
-    char timeout_str[16] = "1000";
-    char type_str[16] = "bulk";
-    char channel_str[8] = "1";
-
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        httpd_query_key_value(query, "ep", ep_str, sizeof(ep_str));
-        httpd_query_key_value(query, "addr", addr_str, sizeof(addr_str));
-        httpd_query_key_value(query, "data", data_str, sizeof(data_str));
-        httpd_query_key_value(query, "timeout", timeout_str, sizeof(timeout_str));
-        httpd_query_key_value(query, "type", type_str, sizeof(type_str));
-        httpd_query_key_value(query, "channel", channel_str, sizeof(channel_str));
+// POST /api/bruteforce - Execute bruteforce from JSON body
+static esp_err_t api_bruteforce_http_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "=== API: bruteforce HTTP handler called ===");
+    
+    // Check if executor is busy
+    if (usb_executor_is_busy()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Executor busy\"}");
+        return ESP_OK;
     }
     
-    uint8_t endpoint = (uint8_t)atoi(ep_str);
-    uint8_t device_addr = (uint8_t)atoi(addr_str);
-    uint8_t channel = (uint8_t)atoi(channel_str);
-    uint32_t timeout_ms = (uint32_t)atoi(timeout_str);
-
-    // Clamp values
-    if (endpoint > 15) endpoint = 15;
-    if (channel > 15) channel = 1;  // Default to 1 if invalid
+    // Read CSV body (same format as UI export)
+    size_t content_len = req->content_len;
+    if (content_len == 0 || content_len > 4096) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Invalid content length\"}");
+        return ESP_OK;
+    }
     
-    // Parse hex data
-    static uint8_t tx_buffer[256];
-    size_t tx_len = 0;
+    char *body = malloc(content_len + 1);
+    if (!body) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Out of memory\"}");
+        return ESP_OK;
+    }
     
-    if (strlen(data_str) > 0) {
-        // Parse space/comma separated hex bytes
-        char *token = strtok(data_str, " ,");
-        while (token != NULL && tx_len < sizeof(tx_buffer)) {
-            tx_buffer[tx_len++] = (uint8_t)strtol(token, NULL, 16);
-            token = strtok(NULL, " ,");
+    int received = httpd_req_recv(req, body, content_len);
+    if (received != content_len) {
+        free(body);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Failed to read body\"}");
+        return ESP_OK;
+    }
+    body[content_len] = '\0';
+    
+    // Parse CSV format: field,iterate,start,end,exclude
+    usb_job_bruteforce_t params = {0};
+    params.delay_ms = 50;  // Default
+    
+    // Field name to struct pointer mapping
+    struct { const char *name; usb_bf_field_t *field; } field_map[] = {
+        {"bmRequestType", &params.bmRequestType},
+        {"bRequest", &params.bRequest},
+        {"wValueHi", &params.wValueHi},
+        {"wValueLo", &params.wValueLo},
+        {"wIndexHi", &params.wIndexHi},
+        {"wIndexLo", &params.wIndexLo},
+        {"wLength", &params.wLength},
+        {"packetSize", &params.packetSize}
+    };
+    
+    char *line = strtok(body, "\n");
+    while (line) {
+        // Skip header line
+        if (strncmp(line, "field,", 6) == 0) {
+            line = strtok(NULL, "\n");
+            continue;
+        }
+        
+        // Parse CSV line: field,iterate,start,end,exclude
+        char field_name[32] = {0};
+        char iterate_str[8] = {0};
+        char start_str[16] = {0};
+        char end_str[16] = {0};
+        
+        // Simple CSV parse (handles quoted fields too)
+        char *p = line;
+        char *dst = field_name;
+        int col = 0;
+        while (*p && *p != '\r') {
+            if (*p == ',') {
+                col++;
+                p++;
+                if (col == 1) dst = iterate_str;
+                else if (col == 2) dst = start_str;
+                else if (col == 3) dst = end_str;
+                else dst = NULL;
+                continue;
+            }
+            if (*p == '"') { p++; continue; }  // Skip quotes
+            if (dst && (dst - (col == 0 ? field_name : col == 1 ? iterate_str : col == 2 ? start_str : end_str)) < 15) {
+                *dst++ = *p;
+            }
+            p++;
+        }
+        
+        // Handle special fields
+        if (strcmp(field_name, "delay") == 0) {
+            params.delay_ms = (uint32_t)atoi(iterate_str);
+        } else if (strcmp(field_name, "dataMode") == 0 || strcmp(field_name, "dataBytes") == 0) {
+            // Skip for now (not implemented in bruteforce executor yet)
+        } else {
+            // Match field name to struct
+            for (int i = 0; i < 8; i++) {
+                if (strcmp(field_name, field_map[i].name) == 0) {
+                    field_map[i].field->iterate = (iterate_str[0] == '1');
+                    field_map[i].field->start = (uint16_t)strtol(start_str, NULL, 0);
+                    field_map[i].field->end = (uint16_t)strtol(end_str, NULL, 0);
+                    if (!field_map[i].field->iterate) {
+                        field_map[i].field->end = field_map[i].field->start;
+                    }
+                    break;
+                }
+            }
+        }
+        
+        line = strtok(NULL, "\n");
+    }
+    free(body);
+    
+    // Initialize semaphore
+    if (!http_api_done_sem) {
+        http_api_done_sem = xSemaphoreCreateBinary();
+    }
+    
+    // Reset result storage
+    http_api_result_count = 0;
+    http_api_final_result = ESP_OK;
+    xSemaphoreTake(http_api_done_sem, 0);
+    
+    // Submit bruteforce job
+    esp_err_t submit_ret = usb_executor_submit_bruteforce(&params, http_api_result_cb, http_api_done_cb, NULL);
+    
+    if (submit_ret != ESP_OK) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Failed to submit job\"}");
+        return ESP_OK;
+    }
+    
+    // Wait for completion (max 5 minutes for bruteforce)
+    if (xSemaphoreTake(http_api_done_sem, pdMS_TO_TICKS(300000)) != pdTRUE) {
+        usb_executor_stop();
+        httpd_resp_set_status(req, "504 Gateway Timeout");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Execution timeout\"}");
+        return ESP_OK;
+    }
+    
+    // Build response JSON (summary only, not all results)
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", http_api_final_result == ESP_OK ? "success" : "error");
+    cJSON_AddNumberToObject(root, "iterations", http_api_result_count);
+    
+    // Count successes
+    int success_count = 0;
+    for (int i = 0; i < http_api_result_count; i++) {
+        if (http_api_results[i].status == 0 && http_api_results[i].bytes_received > 0) {
+            success_count++;
         }
     }
-    
-    if (endpoint > 15) endpoint = 15;
-    if (timeout_ms == 0) timeout_ms = 1000;
-    
-    usb_endpoint_type_t ep_type =
-        (strcasecmp(type_str, "interrupt") == 0 || strcasecmp(type_str, "intr") == 0)
-            ? USB_EP_TYPE_INTERRUPT
-            : USB_EP_TYPE_BULK;
-
-    ESP_LOGI(TAG, "API: Endpoint OUT - EP%d, addr=%d, chan=%d, len=%zu, type=%s", endpoint, device_addr, channel, tx_len, type_str);
-
-    esp_err_t ret = usb_endpoint_out(endpoint, device_addr, ep_type, channel, tx_buffer, tx_len, timeout_ms);
-    
-    // Update stats
-    update_usb_stats(0, tx_len);
-    
-    // Build JSON response
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "status", ret == ESP_OK ? "success" : "failed");
-    cJSON_AddNumberToObject(root, "endpoint", endpoint);
-    cJSON_AddNumberToObject(root, "device_addr", device_addr);
-    cJSON_AddNumberToObject(root, "bytes_sent", tx_len);
-    cJSON_AddStringToObject(root, "ep_type", ep_type == USB_EP_TYPE_INTERRUPT ? "interrupt" : "bulk");
+    cJSON_AddNumberToObject(root, "successes", success_count);
     
     const char *json_str = cJSON_Print(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json_str);
+    free((void *)json_str);
+    cJSON_Delete(root);
     
+    return ESP_OK;
+}
+
+// ============================================================================
+// Native Chain Execution API (WebSocket)
+// ============================================================================
+
+// WebSocket client for streaming results
+static httpd_handle_t chain_ws_server = NULL;
+static int chain_ws_fd = -1;
+
+// Helper to send WebSocket message
+static void chain_ws_send_json(cJSON *json) {
+    if (chain_ws_fd < 0 || chain_ws_server == NULL) return;
+    const char *json_str = cJSON_PrintUnformatted(json);
+    if (json_str) {
+        httpd_ws_frame_t pkt = {
+            .type = HTTPD_WS_TYPE_TEXT,
+            .payload = (uint8_t *)json_str,
+            .len = strlen(json_str)
+        };
+        httpd_ws_send_frame_async(chain_ws_server, chain_ws_fd, &pkt);
+        free((void *)json_str);
+    }
+}
+
+// Callback to stream results via WebSocket
+static void chain_ws_callback(int index, const chain_result_t *result, void *user_data) {
+    // Update USB stats for all USB transfer types
+    if (result->type <= CHAIN_TYPE_INTERRUPT_OUT) {
+        update_usb_stats(result->bytes_received, 8);  // 8 bytes for SETUP packet
+        ESP_LOGD(TAG, "Stats update: type=%d rx=%d", result->type, result->bytes_received);
+    }
+    
+    if (chain_ws_fd < 0 || chain_ws_server == NULL) {
+        ESP_LOGW(TAG, "WS callback: no connection (fd=%d)", chain_ws_fd);
+        return;
+    }
+    ESP_LOGI(TAG, "WS callback: index=%d status=%d bytes=%d data_len=%d", 
+             index, result->status, result->bytes_received, result->data_len);
+    
+    // Check if this is a button wait result - send waiting message
+    if (result->type == CHAIN_TYPE_WAIT_BUTTON && result->status == 0) {
+        // Button was pressed, normal result
+    }
+    
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "i", index);
+    cJSON_AddNumberToObject(root, "t", result->type);
+    cJSON_AddNumberToObject(root, "s", result->status);
+    cJSON_AddNumberToObject(root, "b", result->bytes_received);
+    
+    // Include USB params (for bruteforce display)
+    if (result->bmRequestType || result->bRequest || result->wValue || result->wIndex) {
+        cJSON_AddNumberToObject(root, "bmRT", result->bmRequestType);
+        cJSON_AddNumberToObject(root, "bReq", result->bRequest);
+        cJSON_AddNumberToObject(root, "wVal", result->wValue);
+        cJSON_AddNumberToObject(root, "wIdx", result->wIndex);
+        cJSON_AddNumberToObject(root, "wLen", result->wLength);
+        cJSON_AddNumberToObject(root, "pkt", result->packetSize);
+    }
+    
+    if (result->data_len > 0) {
+        char *hex_str = malloc(result->data_len * 2 + 1);
+        if (hex_str) {
+            for (size_t i = 0; i < result->data_len && i < 256; i++) {
+                sprintf(hex_str + i * 2, "%02X", result->data[i]);
+            }
+            hex_str[result->data_len * 2] = '\0';
+            cJSON_AddStringToObject(root, "d", hex_str);
+            ESP_LOGI(TAG, "WS callback: sending %d bytes hex: %.32s...", result->data_len, hex_str);
+            free(hex_str);
+        }
+    } else {
+        ESP_LOGW(TAG, "WS callback: data_len is 0, no hex data to send");
+    }
+    
+    chain_ws_send_json(root);
+    cJSON_Delete(root);
+}
+
+// Callback for wait notifications (button/webhook)
+static void chain_wait_notify(int index, chain_entry_type_t type, const char *info, void *user_data) {
+    if (chain_ws_fd < 0 || chain_ws_server == NULL) return;
+    
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "i", index);
+    
+    if (type == CHAIN_TYPE_WAIT_BUTTON) {
+        cJSON_AddStringToObject(root, "waiting", "button");
+        cJSON_AddStringToObject(root, "label", info ? info : "Press Continue");
+    } else if (type == CHAIN_TYPE_WAIT_WEBHOOK) {
+        cJSON_AddStringToObject(root, "waiting", "webhook");
+        cJSON_AddStringToObject(root, "trigger_id", info ? info : "");
+    }
+    
+    chain_ws_send_json(root);
+    cJSON_Delete(root);
+}
+
+// Callback when job completes (called from Core 1)
+static void chain_done_notify(esp_err_t result, void *user_data) {
+    if (chain_ws_fd < 0 || chain_ws_server == NULL) {
+        ESP_LOGW(TAG, "Done notify: no connection (fd=%d)", chain_ws_fd);
+        return;
+    }
+    ESP_LOGI(TAG, "Done notify: result=%d", result);
+    
+    cJSON *done = cJSON_CreateObject();
+    cJSON_AddStringToObject(done, "status", result == ESP_OK ? "done" : "error");
+    chain_ws_send_json(done);
+    cJSON_Delete(done);
+    
+    // Clear WebSocket context
+    chain_ws_fd = -1;
+}
+
+// Execute a single USB request from JSON params - build CSV and run as chain
+static void ws_execute_single(httpd_req_t *req, cJSON *json) {
+    // Build CSV line from JSON params (single request = chain with 1 entry)
+    char csv[256];
+    int len = 0;
+    
+    cJSON *item;
+    const char *bmReq = "0x80", *bReq = "0x06", *wVal = "0x0100", *wIdx = "0x0000";
+    int wLen = 18, pktSize = 8, devAddr = 0, dataEp = 0;
+    
+    if ((item = cJSON_GetObjectItem(json, "bmRequestType")) && cJSON_IsString(item)) bmReq = item->valuestring;
+    if ((item = cJSON_GetObjectItem(json, "bRequest")) && cJSON_IsString(item)) bReq = item->valuestring;
+    if ((item = cJSON_GetObjectItem(json, "wValue")) && cJSON_IsString(item)) wVal = item->valuestring;
+    if ((item = cJSON_GetObjectItem(json, "wIndex")) && cJSON_IsString(item)) wIdx = item->valuestring;
+    if ((item = cJSON_GetObjectItem(json, "wLength"))) wLen = cJSON_IsNumber(item) ? item->valueint : 18;
+    if ((item = cJSON_GetObjectItem(json, "packetSize"))) pktSize = cJSON_IsNumber(item) ? item->valueint : 8;
+    if ((item = cJSON_GetObjectItem(json, "deviceAddr"))) devAddr = cJSON_IsNumber(item) ? item->valueint : 0;
+    if ((item = cJSON_GetObjectItem(json, "dataStageEp"))) dataEp = cJSON_IsNumber(item) ? item->valueint : 0;
+    
+    // Build CSV: control,bmReq,bReq,wVal,wIdx,wLen,pktSize,devAddr,dataEp
+    len = snprintf(csv, sizeof(csv), "control,%s,%s,%s,%s,%d,%d,%d,%d",
+                   bmReq, bReq, wVal, wIdx, wLen, pktSize, devAddr, dataEp);
+    
+    // Store WebSocket context for callbacks
+    chain_ws_server = req->handle;
+    chain_ws_fd = httpd_req_to_sockfd(req);
+    
+    // Copy CSV to heap (executor will free it)
+    char *csv_copy = strdup(csv);
+    if (!csv_copy) {
+        cJSON *err = cJSON_CreateObject();
+        cJSON_AddStringToObject(err, "status", "error");
+        cJSON_AddStringToObject(err, "message", "Out of memory");
+        chain_ws_send_json(err);
+        cJSON_Delete(err);
+        chain_ws_fd = -1;
+        return;
+    }
+    
+    ESP_LOGI(TAG, "Single request as chain: %s", csv);
+    
+    // Submit as chain - truly unified path!
+    esp_err_t ret = usb_executor_submit_chain(csv_copy, len, chain_ws_callback, chain_wait_notify, chain_done_notify, NULL);
+    
+    if (ret != ESP_OK) {
+        free(csv_copy);
+        cJSON *err = cJSON_CreateObject();
+        cJSON_AddStringToObject(err, "status", "error");
+        cJSON_AddStringToObject(err, "message", "Executor busy");
+        chain_ws_send_json(err);
+        cJSON_Delete(err);
+        chain_ws_fd = -1;
+    }
+}
+
+// Execute bruteforce from JSON config - submit to executor
+static void ws_execute_bruteforce(httpd_req_t *req, cJSON *json) {
+    usb_job_bruteforce_t params = {0};
+    
+    // Parse field configurations
+    const char *field_names[] = {"bmRequestType", "bRequest", "wValueHi", "wValueLo", 
+                                  "wIndexHi", "wIndexLo", "wLength", "packetSize"};
+    usb_bf_field_t *bf_fields[] = {
+        &params.bmRequestType, &params.bRequest, &params.wValueHi, &params.wValueLo,
+        &params.wIndexHi, &params.wIndexLo, &params.wLength, &params.packetSize
+    };
+    
+    for (int i = 0; i < 8; i++) {
+        cJSON *field = cJSON_GetObjectItem(json, field_names[i]);
+        if (field) {
+            cJSON *start = cJSON_GetObjectItem(field, "start");
+            cJSON *end = cJSON_GetObjectItem(field, "end");
+            cJSON *iterate = cJSON_GetObjectItem(field, "iterate");
+            bf_fields[i]->start = start ? (uint16_t)start->valueint : 0;
+            bf_fields[i]->end = end ? (uint16_t)end->valueint : bf_fields[i]->start;
+            bf_fields[i]->iterate = iterate ? cJSON_IsTrue(iterate) : false;
+        }
+    }
+    
+    cJSON *delay_item = cJSON_GetObjectItem(json, "delay");
+    params.delay_ms = delay_item ? (uint32_t)delay_item->valueint : 50;
+    
+    // Count total iterations for logging
+    uint64_t total = 1;
+    for (int i = 0; i < 8; i++) {
+        if (bf_fields[i]->iterate) {
+            total *= (bf_fields[i]->end - bf_fields[i]->start + 1);
+        }
+    }
+    ESP_LOGI(TAG, "Bruteforce: %"PRIu64" iterations, %"PRIu32" ms delay", total, params.delay_ms);
+    
+    // Store WebSocket context for callbacks
+    chain_ws_server = req->handle;
+    chain_ws_fd = httpd_req_to_sockfd(req);
+    
+    // Submit to executor on Core 1
+    esp_err_t ret = usb_executor_submit_bruteforce(&params, chain_ws_callback, chain_done_notify, NULL);
+    
+    if (ret != ESP_OK) {
+        // Failed to submit - send error immediately
+        cJSON *err = cJSON_CreateObject();
+        cJSON_AddStringToObject(err, "status", "error");
+        cJSON_AddStringToObject(err, "message", "Executor busy");
+        chain_ws_send_json(err);
+        cJSON_Delete(err);
+        chain_ws_fd = -1;
+    }
+}
+
+// WebSocket handler: /ws/usb
+// Unified handler for single requests, bruteforce, and chains
+static esp_err_t api_chain_ws_handler(httpd_req_t *req) {
+    if (req->method == HTTP_GET) {
+        ESP_LOGI(TAG, "USB WebSocket connected");
+        return ESP_OK;
+    }
+    
+    httpd_ws_frame_t pkt = {0};
+    pkt.type = HTTPD_WS_TYPE_TEXT;
+    
+    // Get frame length
+    esp_err_t ret = httpd_ws_recv_frame(req, &pkt, 0);
+    if (ret != ESP_OK) return ret;
+    
+    if (pkt.len == 0) return ESP_OK;
+    
+    // Allocate and receive
+    pkt.payload = malloc(pkt.len + 1);
+    if (!pkt.payload) return ESP_ERR_NO_MEM;
+    
+    ret = httpd_ws_recv_frame(req, &pkt, pkt.len);
+    if (ret != ESP_OK) {
+        free(pkt.payload);
+        return ret;
+    }
+    pkt.payload[pkt.len] = '\0';
+    
+    char *payload = (char*)pkt.payload;
+    
+    // Check for stop command
+    if (pkt.len < 10 && strstr(payload, "stop") != NULL) {
+        usb_executor_stop();  // Stops both chain and bruteforce
+        free(pkt.payload);
+        return ESP_OK;
+    }
+    
+    // Check if JSON command (starts with '{')
+    if (payload[0] == '{') {
+        cJSON *json = cJSON_Parse(payload);
+        free(pkt.payload);
+        
+        if (!json) {
+            ESP_LOGW(TAG, "Invalid JSON");
+            return ESP_OK;
+        }
+        
+        cJSON *cmd = cJSON_GetObjectItem(json, "cmd");
+        if (cmd && cJSON_IsString(cmd)) {
+            if (strcmp(cmd->valuestring, "single") == 0) {
+                ESP_LOGI(TAG, "Executing single request");
+                ws_execute_single(req, json);
+            } else if (strcmp(cmd->valuestring, "bruteforce") == 0) {
+                ESP_LOGI(TAG, "Executing bruteforce");
+                ws_execute_bruteforce(req, json);
+            } else if (strcmp(cmd->valuestring, "continue") == 0) {
+                // User clicked continue button in modal
+                ESP_LOGI(TAG, "Button continue received");
+                chain_button_continue();
+                
+                // Send ack
+                cJSON *ack = cJSON_CreateObject();
+                cJSON_AddStringToObject(ack, "status", "ok");
+                const char *ack_str = cJSON_PrintUnformatted(ack);
+                if (ack_str) {
+                    httpd_ws_frame_t ack_pkt = {
+                        .type = HTTPD_WS_TYPE_TEXT,
+                        .payload = (uint8_t *)ack_str,
+                        .len = strlen(ack_str)
+                    };
+                    httpd_ws_send_frame(req, &ack_pkt);
+                    free((void *)ack_str);
+                }
+                cJSON_Delete(ack);
+            } else if (strcmp(cmd->valuestring, "webhook") == 0) {
+                // External webhook trigger
+                cJSON *trigger_id = cJSON_GetObjectItem(json, "trigger_id");
+                const char *tid = (trigger_id && cJSON_IsString(trigger_id)) ? trigger_id->valuestring : "";
+                ESP_LOGI(TAG, "Webhook trigger: %s", tid);
+                chain_webhook_trigger(tid);
+                
+                // Send ack
+                cJSON *ack = cJSON_CreateObject();
+                cJSON_AddStringToObject(ack, "status", "ok");
+                const char *ack_str = cJSON_PrintUnformatted(ack);
+                if (ack_str) {
+                    httpd_ws_frame_t ack_pkt = {
+                        .type = HTTPD_WS_TYPE_TEXT,
+                        .payload = (uint8_t *)ack_str,
+                        .len = strlen(ack_str)
+                    };
+                    httpd_ws_send_frame(req, &ack_pkt);
+                    free((void *)ack_str);
+                }
+                cJSON_Delete(ack);
+            }
+        }
+        cJSON_Delete(json);
+        return ESP_OK;
+    }
+    
+    // Otherwise treat as CSV chain - submit to executor on Core 1
+    chain_ws_server = req->handle;
+    chain_ws_fd = httpd_req_to_sockfd(req);
+    
+    ESP_LOGI(TAG, "Submitting chain to executor (%d bytes)", (int)pkt.len);
+    esp_err_t submit_ret = usb_executor_submit_chain(
+        payload, pkt.len,
+        chain_ws_callback,
+        chain_wait_notify,
+        chain_done_notify,
+        NULL
+    );
+    
+    free(pkt.payload);
+    
+    if (submit_ret != ESP_OK) {
+        // Failed to submit - send error immediately
+        cJSON *err = cJSON_CreateObject();
+        cJSON_AddStringToObject(err, "status", "error");
+        cJSON_AddStringToObject(err, "message", "Executor busy");
+        chain_ws_send_json(err);
+        cJSON_Delete(err);
+        chain_ws_fd = -1;
+    }
+    
+    // Job runs asynchronously, done_notify will send completion
+    return ESP_OK;
+}
+
+// POST /api/chain/stop - Stop running chain
+static esp_err_t api_chain_stop_handler(httpd_req_t *req) {
+    chain_stop();
+    
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", "success");
+    
+    const char *json_str = cJSON_Print(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
     free((void *)json_str);
     cJSON_Delete(root);
     
@@ -1299,11 +1750,11 @@ static esp_err_t openapi_json_handler(httpd_req_t *req)
 
 esp_err_t web_interface_start(void)
 {
-    // HTTP server configuration (will run on Core 0 with WiFi)
-    // USB handler is now in usb_malformed.c on Core 1
+    // HTTP server configuration - runs on Core 0 (networking core)
+    // USB operations run on Core 1 (dedicated USB core) via usb_malformed.c
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
-    config.max_uri_handlers = 32;
+    config.max_uri_handlers = 40;
     config.lru_purge_enable = true;  // Enable connection purging
     config.recv_wait_timeout = 10;    // 10 second timeout
     config.send_wait_timeout = 10;    // 10 second timeout
@@ -1370,12 +1821,12 @@ esp_err_t web_interface_start(void)
         };
         httpd_register_uri_handler(server, &openapi_spec_uri);
         
-        httpd_uri_t api_request_uri = {
-            .uri = "/api/send_request",
+        httpd_uri_t api_single_request_uri = {
+            .uri = "/api/single_request",
             .method = HTTP_POST,
-            .handler = api_send_request_handler
+            .handler = api_single_request_handler
         };
-        httpd_register_uri_handler(server, &api_request_uri);
+        httpd_register_uri_handler(server, &api_single_request_uri);
         
         httpd_uri_t api_status_uri = {
             .uri = "/api/status",
@@ -1474,20 +1925,41 @@ esp_err_t web_interface_start(void)
             .handler = api_gpio_handler
         };
         httpd_register_uri_handler(server, &api_gpio_post_uri);
-
-        httpd_uri_t api_endpoint_in_uri = {
-            .uri = "/api/endpoint_in",
-            .method = HTTP_GET,
-            .handler = api_endpoint_in_handler
-        };
-        httpd_register_uri_handler(server, &api_endpoint_in_uri);
-
-        httpd_uri_t api_endpoint_out_uri = {
-            .uri = "/api/endpoint_out",
+        
+        // HTTP API for chain execution (POST CSV body)
+        httpd_uri_t api_chain_http_uri = {
+            .uri = "/api/chain",
             .method = HTTP_POST,
-            .handler = api_endpoint_out_handler
+            .handler = api_chain_http_handler
         };
-        httpd_register_uri_handler(server, &api_endpoint_out_uri);
+        httpd_register_uri_handler(server, &api_chain_http_uri);
+        
+        // HTTP API for bruteforce execution (POST JSON body)
+        httpd_uri_t api_bruteforce_http_uri = {
+            .uri = "/api/bruteforce",
+            .method = HTTP_POST,
+            .handler = api_bruteforce_http_handler
+        };
+        httpd_register_uri_handler(server, &api_bruteforce_http_uri);
+
+        // Native Chain Execution: WebSocket sends CSV, receives results
+        httpd_uri_t chain_ws_uri = {
+            .uri = "/ws/chain",
+            .method = HTTP_GET,
+            .handler = api_chain_ws_handler,
+            .is_websocket = true
+        };
+        httpd_register_uri_handler(server, &chain_ws_uri);
+
+        httpd_uri_t chain_stop_uri = {
+            .uri = "/api/chain/stop",
+            .method = HTTP_POST,
+            .handler = api_chain_stop_handler
+        };
+        httpd_register_uri_handler(server, &chain_stop_uri);
+
+        // Initialize chain engine
+        chain_engine_init();
 
         return ESP_OK;
     }

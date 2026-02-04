@@ -29,7 +29,8 @@ USBane is an open-source USB security research framework that enables direct har
 - **Direct USB Hardware Access** - Bypasses ESP-IDF USB Host stack for low-level control
 - **Web Interface** - Real-time control via browser (WiFi AP or Client mode)
 - **REST API with OpenAPI Documentation** - Full API documentation with Swagger UI for scripting and automation
-- **Dual-Core Architecture** - Core 0 handles WiFi/HTTP, Core 1 handles USB operations
+- **Dual-Core Architecture** - Core 0 handles WiFi/HTTP, Core 1 runs unified USB executor
+- **Unified USB Executor** - Single endpoint handles control, bulk, and interrupt transfers
 - **Malformed Packet Support** - Send truncated, oversized, or custom USB packets
 - **Bulk/Interrupt Endpoint Transfers** - Read/write any endpoint (EP1-15) with:
   - **Configurable Host Channel** - Use separate USB channels (0-15) for parallel operations
@@ -55,6 +56,10 @@ USBane is an open-source USB security research framework that enables direct har
 - USB OTG cable/adapter for connecting target devices
 - Target USB device for testing
 - (Optional) GPIO pins for hardware triggers/control
+
+### Recommended Board
+
+[**Freenove ESP32-S3-WROOM**](https://store.freenove.com/products/fnk0085)
 
 ## Quick Start
 
@@ -122,25 +127,52 @@ The REST API enables:
 - **Programmatic control** - Send USB requests, configure settings, manage chains via HTTP
 - **Remote monitoring** - Query device status, statistics, and results
 
-Example API usage:
+### Unified `/api/single_request` Endpoint
+
+All USB transfers (control, bulk, interrupt) use a single endpoint with a `type` parameter:
+
 ```bash
-# Send a USB control request (EP0)
-curl -X POST "http://192.168.4.1/api/send_request?bmRequestType=0x80&bRequest=0x06&wValue=0x0100&wIndex=0x00&wLength=18"
+# Control transfer (default)
+curl -X POST "http://192.168.4.1/api/single_request?type=control&bmRequestType=0x80&bRequest=0x06&wValue=0x0100&wIndex=0x00&wLength=18"
 
-# Bulk/Interrupt IN from endpoint 10
-curl "http://192.168.4.1/api/endpoint_in?ep=10&addr=0&len=64&timeout=1000&type=bulk"
+# Bulk IN from endpoint 1
+curl -X POST "http://192.168.4.1/api/single_request?type=bulk_in&ep=1&len=64&addr=0&timeout=1000"
 
-# Continuous read with max 10 attempts
-curl "http://192.168.4.1/api/endpoint_in?ep=10&addr=0&len=64&timeout=500&continuous=1&max_attempts=10"
+# Bulk OUT to endpoint 1
+curl -X POST "http://192.168.4.1/api/single_request?type=bulk_out&ep=1&data=DEADBEEF&addr=0"
 
-# Bulk/Interrupt OUT to endpoint 1
-curl -X POST "http://192.168.4.1/api/endpoint_out?ep=1&addr=0&data=DEADBEEF&type=bulk"
+# Interrupt IN with continuous polling
+curl -X POST "http://192.168.4.1/api/single_request?type=interrupt_in&ep=1&len=8&continuous=1&max_attempts=10"
 
+# Interrupt OUT
+curl -X POST "http://192.168.4.1/api/single_request?type=interrupt_out&ep=1&data=01020304"
+```
+
+### Chain and Bruteforce Execution
+
+```bash
+# Execute a chain (POST CSV body)
+curl -X POST "http://192.168.4.1/api/chain" \
+  -H "Content-Type: text/csv" \
+  --data-binary @my_chain.csv
+
+# Execute bruteforce (POST CSV config - same format as UI export)
+curl -X POST "http://192.168.4.1/api/bruteforce" \
+  -H "Content-Type: text/csv" \
+  --data-binary @bruteforce_config.csv
+```
+
+### Other API Endpoints
+
+```bash
 # Get device status
 curl "http://192.168.4.1/api/status"
 
 # Reset USB device
 curl -X POST "http://192.168.4.1/api/reset"
+
+# Get device descriptors
+curl "http://192.168.4.1/api/device_info"
 ```
 
 See `/api` for complete endpoint documentation with interactive testing.
@@ -318,22 +350,24 @@ action,comment,Device enumerated successfully
 
 ```
 ├── main/
-│   ├── html/           # Web interface files
-│   │   ├── index.html      # Main UI
-│   │   ├── app.js          # UI logic
-│   │   ├── api.html        # API documentation UI
-│   │   ├── openapi.json    # OpenAPI specification
-│   │   ├── applogo.png     # Application logo
-│   │   ├── apptext.svg     # Application text logo
-│   │   ├── favicon.ico     # Browser favicon
-│   │   └── logo.svg        # SVG logo
-│   ├── main.c          # Application entry point
-│   ├── usb_malformed.c # USB hardware access layer
-│   ├── web_interface.c # HTTP server and API endpoints
-│   └── wifi_ap.c       # WiFi AP/STA management
-├── sample_images/      # Application screenshots
-├── applogo.png         # High-res logo for README
-├── apptext.svg         # Logo text for README
+│   ├── html/              # Web interface files
+│   │   ├── index.html     # Main UI
+│   │   ├── app.js         # UI logic and WebSocket client
+│   │   ├── api.html       # API documentation UI (Swagger)
+│   │   ├── openapi.json   # OpenAPI specification
+│   │   ├── applogo.png    # Application logo
+│   │   ├── apptext.svg    # Application text logo
+│   │   ├── favicon.ico    # Browser favicon
+│   │   └── logo.svg       # SVG logo
+│   ├── main.c             # Application entry point
+│   ├── usbane.c/.h        # USB hardware access layer (Core 1)
+│   ├── chain_engine.c/.h  # Chain/bruteforce executor (Core 1)
+│   ├── web_interface.c/.h # HTTP/WebSocket server (Core 0)
+│   └── wifi_ap.c/.h       # WiFi AP/STA management
+├── chains/                # Example chain CSV files
+├── sample_images/         # Application screenshots
+├── applogo.png            # High-res logo for README
+├── apptext.svg            # Logo text for README
 ├── CMakeLists.txt
 ├── sdkconfig.defaults
 └── COPYING

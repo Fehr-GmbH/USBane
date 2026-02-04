@@ -1,7 +1,77 @@
 // USBane - Web Interface JavaScript
-// Dual-Core Optimized Web Interface
+// Native USB Execution via WebSocket
 
 let req_count = 0;
+
+// ============================================
+// Native WebSocket Communication
+// ============================================
+
+let usbSocket = null;
+let usbSocketResolve = null;
+
+function getUsbSocket() {
+    return new Promise((resolve, reject) => {
+        if (usbSocket && usbSocket.readyState === WebSocket.OPEN) {
+            resolve(usbSocket);
+            return;
+        }
+        
+        const wsUrl = 'ws://' + window.location.host + '/ws/chain';
+        usbSocket = new WebSocket(wsUrl);
+        
+        usbSocket.onopen = () => resolve(usbSocket);
+        usbSocket.onerror = (e) => {
+            usbSocket = null;
+            reject(e);
+        };
+        usbSocket.onclose = () => {
+            usbSocket = null;
+        };
+    });
+}
+
+// Send command and wait for response
+function sendNativeCommand(cmd) {
+    return new Promise(async (resolve, reject) => {
+        try {
+            const ws = await getUsbSocket();
+            let result = null;  // Store result data from first message
+            
+            const handler = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    // If this message has result data (i, b, d fields), store it
+                    if (data.i !== undefined && data.b !== undefined) {
+                        result = data;
+                    }
+                    
+                    // When done/error arrives, resolve with the stored result
+                    if (data.status === 'done' || data.status === 'error') {
+                        ws.removeEventListener('message', handler);
+                        // Return stored result if available, otherwise the done message
+                        resolve(result || data);
+                    }
+                } catch (e) {
+                    // Not JSON or parsing error
+                }
+            };
+            
+            ws.addEventListener('message', handler);
+            ws.send(JSON.stringify(cmd));
+            
+            // Timeout after 10 seconds
+            setTimeout(() => {
+                ws.removeEventListener('message', handler);
+                reject(new Error('Timeout'));
+            }, 10000);
+            
+        } catch (e) {
+            reject(e);
+        }
+    });
+}
 
 // ============================================
 // Device Info Tab - Descriptor Fetching & Parsing
@@ -107,18 +177,29 @@ async function fetchDeviceInfo() {
 }
 
 async function sendDescriptorRequest(wValue, wIndex, wLength) {
-    const url = `/api/send_request?bmRequestType=0x80&bRequest=0x06&wValue=0x${wValue.toString(16).padStart(4,'0')}&wIndex=0x${wIndex.toString(16).padStart(4,'0')}&wLength=${wLength}&packetSize=8&maxRetries=100&dataBytes=&dataMode=separate`;
-    const response = await fetch(url, { method: 'POST' });
-    const data = await response.json();
-    
-    if (data.data && data.bytes_received > 0) {
-        // Parse hex string to byte array
-        const hexStr = data.data.replace(/\s/g, '');
-        const bytes = [];
-        for (let i = 0; i < hexStr.length; i += 2) {
-            bytes.push(parseInt(hexStr.substr(i, 2), 16));
+    try {
+        const result = await sendNativeCommand({
+            cmd: 'single',
+            bmRequestType: '0x80',
+            bRequest: '0x06',
+            wValue: '0x' + wValue.toString(16).padStart(4, '0'),
+            wIndex: '0x' + wIndex.toString(16).padStart(4, '0'),
+            wLength: wLength,
+            packetSize: 8,
+            timeout: 1000
+        });
+        
+        if (result.d && result.b > 0) {
+            // Parse hex string to byte array
+            const hexStr = result.d.replace(/\s/g, '');
+            const bytes = [];
+            for (let i = 0; i < hexStr.length; i += 2) {
+                bytes.push(parseInt(hexStr.substr(i, 2), 16));
+            }
+            return bytes;
         }
-        return bytes;
+    } catch (e) {
+        console.error('Descriptor request failed:', e);
     }
     return null;
 }
@@ -314,6 +395,7 @@ let chainRunning = false;
 let chainCurrentIndex = 0;
 let chainWaitingForContinue = false;
 let chainContinueResolver = null;
+let chainWs = null;  // WebSocket for native chain execution
 
 function addToChain() {
     const req = {
@@ -1406,657 +1488,6 @@ function editChainCell(index, field, cell) {
     input.select();
 }
 
-async function executeChain() {
-    if (chainRequests.length === 0) {
-        alert('No requests in chain');
-        return;
-    }
-    if (chainRunning) return;
-    
-    chainRunning = true;
-    chainCurrentIndex = 0;
-    chainWaitingForContinue = false;
-    
-    document.getElementById('chainExecBtn').style.display = 'none';
-    document.getElementById('chainStopBtn').style.display = 'inline-block';
-    document.getElementById('chainContinueBtn').style.display = 'none';
-    document.getElementById('chainWaitInfo').style.display = 'none';
-    
-    const delay = parseInt(document.getElementById('chain_delay').value) || 50;
-    const progress = document.getElementById('chainProgress');
-    const waitInfo = document.getElementById('chainWaitInfo');
-    const maxRetries = parseInt(document.getElementById('cfg_maxRetries').value) || 100;
-    const maxBfRetries = getBfMaxRetries();
-    const retryDelayIncrement = getRetryDelayIncrement();
-    const resetOnRetry = getResetOnRetry();
-    const resetAfterRetries = getResetAfterRetries();
-    
-    let lastResponse = null; // Store last USB request response for COPY TO actions
-    let skipNext = false; // Flag to skip next request after condition
-    
-    for (let i = 0; i < chainRequests.length; i++) {
-        if (!chainRunning) break;
-        chainCurrentIndex = i;
-        
-        const req = chainRequests[i];
-        const actionType = req.type || 'control';
-        
-        // Check if we need to skip this item
-        if (skipNext) {
-            skipNext = false;
-            progress.innerText = 'Skipped step ' + (i + 1);
-            progress.style.color = '#888';
-            
-            // Add table entry showing what was skipped
-            let skippedDesc = 'Unknown';
-            if (actionType === 'control') {
-                skippedDesc = 'Control Transfer: ' + (req.bmRequestType || '?') + ' ' + (req.bRequest || '?');
-            } else if (actionType === 'waitfor') {
-                skippedDesc = 'Wait: ' + (req.waitType || '?').toUpperCase();
-            } else if (actionType === 'action') {
-                skippedDesc = 'Action: ' + (req.actionType || '?').toUpperCase();
-            } else if (actionType === 'condition') {
-                skippedDesc = 'Condition';
-            } else if (actionType === 'bulk_in') {
-                skippedDesc = 'Bulk IN EP' + (req.endpoint || 1);
-            } else if (actionType === 'bulk_out') {
-                skippedDesc = 'Bulk OUT EP' + (req.endpoint || 1);
-            } else if (actionType === 'interrupt_in') {
-                skippedDesc = 'Interrupt IN EP' + (req.endpoint || 1);
-            } else if (actionType === 'interrupt_out') {
-                skippedDesc = 'Interrupt OUT EP' + (req.endpoint || 1);
-            }
-            addTableRow('SKIPPED', skippedDesc, '-', '-', '-', '-', '-', '-', 'SKIPPED');
-            
-            await new Promise(resolve => setTimeout(resolve, delay));
-            continue;
-        }
-        
-        // Handle waitfor actions
-        if (actionType === 'waitfor') {
-            if (req.waitType === 'button') {
-                // Wait for Continue button press
-                progress.innerText = 'Step ' + (i + 1) + ': Waiting for button...';
-                progress.style.color = '#17a2b8';
-                waitInfo.innerText = req.label || 'Press Continue to proceed';
-                waitInfo.style.display = 'block';
-                document.getElementById('chainContinueBtn').style.display = 'inline-block';
-                
-                // Wait for continue signal
-                chainWaitingForContinue = true;
-                await new Promise(resolve => {
-                    chainContinueResolver = resolve;
-                });
-                chainWaitingForContinue = false;
-                
-                document.getElementById('chainContinueBtn').style.display = 'none';
-                waitInfo.style.display = 'none';
-                
-                if (!chainRunning) break;
-                
-            } else if (req.waitType === 'webhook') {
-                // Wait for webhook trigger
-                const triggerId = req.triggerId || 'trigger1';
-                const timeoutSec = req.timeout || 300;
-                const startTime = Date.now();
-                
-                progress.innerText = 'Step ' + (i + 1) + ': Waiting for webhook...';
-                progress.style.color = '#6f42c1';
-                waitInfo.innerHTML = 'Trigger ID: <b>' + triggerId + '</b><br>URL: <code>/api/trigger?id=' + triggerId + '</code>';
-                waitInfo.style.display = 'block';
-                
-                // Poll for trigger
-                let triggered = false;
-                while (!triggered && chainRunning) {
-                    try {
-                        const response = await fetch('/api/trigger?id=' + encodeURIComponent(triggerId));
-                        const data = await response.json();
-                        if (data.triggered) {
-                            triggered = true;
-                            break;
-                        }
-                    } catch (e) {
-                        console.error('Error checking trigger:', e);
-                    }
-                    
-                    // Check timeout
-                    if ((Date.now() - startTime) / 1000 > timeoutSec) {
-                        progress.innerText = 'Step ' + (i + 1) + ': Webhook timeout!';
-                        progress.style.color = '#dc3545';
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                        break;
-                    }
-                    
-                    // Update countdown
-                    const remaining = Math.ceil(timeoutSec - (Date.now() - startTime) / 1000);
-                    waitInfo.innerHTML = 'Trigger ID: <b>' + triggerId + '</b> (timeout: ' + remaining + 's)<br>URL: <code>/api/trigger?id=' + triggerId + '</code>';
-                    
-                    // Poll every 500ms
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                }
-                
-                waitInfo.style.display = 'none';
-                if (!chainRunning) break;
-                
-            } else if (req.waitType === 'gpio') {
-                // Wait for GPIO pin state
-                const gpioPin = req.gpioPin || 0;
-                const gpioLevel = req.gpioLevel || 0;
-                const timeoutSec = req.timeout || 60;
-                const startTime = Date.now();
-                
-                progress.innerText = 'Step ' + (i + 1) + ': Waiting for GPIO...';
-                progress.style.color = '#fd7e14';
-                waitInfo.innerHTML = 'Pin <b>' + gpioPin + '</b>  ' + (gpioLevel ? 'HIGH' : 'LOW');
-                waitInfo.style.display = 'block';
-                
-                // Poll for GPIO state
-                let triggered = false;
-                while (!triggered && chainRunning) {
-                    try {
-                        const response = await fetch('/api/gpio?pin=' + gpioPin);
-                        const data = await response.json();
-                        if (data.level === gpioLevel) {
-                            triggered = true;
-                            break;
-                        }
-                    } catch (e) {
-                        console.error('Error checking GPIO:', e);
-                    }
-                    
-                    // Check timeout
-                    if ((Date.now() - startTime) / 1000 > timeoutSec) {
-                        progress.innerText = 'Step ' + (i + 1) + ': GPIO timeout!';
-                        progress.style.color = '#dc3545';
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                        break;
-                    }
-                    
-                    // Update countdown
-                    const remaining = Math.ceil(timeoutSec - (Date.now() - startTime) / 1000);
-                    waitInfo.innerHTML = 'Pin <b>' + gpioPin + '</b> -> ' + (gpioLevel ? 'HIGH' : 'LOW') + ' (timeout: ' + remaining + 's)';
-                    
-                    // Poll every 100ms for faster response
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                }
-                
-                waitInfo.style.display = 'none';
-                if (!chainRunning) break;
-                
-            } else if (req.waitType === 'delay') {
-                // Delay wait
-                const duration = req.duration || 1000;
-                progress.innerText = 'Step ' + (i + 1) + ': Delay ' + duration + ' ms';
-                progress.style.color = '#ff9800';
-                
-                await new Promise(resolve => setTimeout(resolve, duration));
-                
-                if (!chainRunning) break;
-                
-            } else if (req.waitType === 'usb_reset') {
-                // USB Reset wait
-                progress.innerText = 'Step ' + (i + 1) + ': USB Reset';
-                progress.style.color = '#e74c3c';
-                
-                try {
-                    await fetch('/api/reset', { method: 'POST' });
-                    await new Promise(resolve => setTimeout(resolve, 200)); // Wait for reset to complete
-                } catch (e) {
-                    console.error('USB Reset error:', e);
-                }
-                
-                if (!chainRunning) break;
-            }
-            
-            // Continue to next action
-            if (i < chainRequests.length - 1 && chainRunning) {
-                await new Promise(resolve => setTimeout(resolve, delay));
-            }
-            continue;
-        }
-        
-        // Handle Action (HTTP, GPIO output, Comment, etc.)
-        if (actionType === 'action') {
-            if (req.actionType === 'http') {
-                progress.innerText = 'Step ' + (i + 1) + ': HTTP';
-                progress.style.color = '#28a745';
-                
-                let httpSuccess = false;
-                try {
-                    // Make HTTP call (GET request for now)
-                    await fetch(req.url || 'http://example.com/api');
-                    httpSuccess = true;
-                } catch (e) {
-                    console.error('HTTP call error:', e);
-                }
-                
-                addTableRow('HTTP', req.url || 'No URL', '-', '-', '-', '-', '-', '-', httpSuccess ? 'OK' : 'FAILED');
-                
-            } else if (req.actionType === 'gpio_out') {
-                progress.innerText = 'Step ' + (i + 1) + ': GPIO';
-                progress.style.color = '#fd7e14';
-                
-                let gpioSuccess = false;
-                try {
-                    // Set GPIO pin level
-                    await fetch('/api/gpio?pin=' + req.gpioPin + '&action=set&level=' + req.gpioLevel, { method: 'POST' });
-                    gpioSuccess = true;
-                } catch (e) {
-                    console.error('GPIO output error:', e);
-                }
-                
-                const gpioDesc = 'Pin ' + req.gpioPin + ' -> ' + req.gpioLevel;
-                addTableRow('GPIO OUT', gpioDesc, '-', '-', '-', '-', '-', '-', gpioSuccess ? 'OK' : 'FAILED');
-                
-            } else if (req.actionType === 'comment') {
-                // Comment does nothing, just skip
-                progress.innerText = 'Step ' + (i + 1) + ': Comment';
-                progress.style.color = '#607d8b';
-                
-                addTableRow('Comment', req.text || 'No comment', '-', '-', '-', '-', '-', '-', '-');
-                
-            } else if (req.actionType === 'copy' || req.actionType === 'copy_to') {
-                // Copy field from response to target request
-                progress.innerText = 'Step ' + (i + 1) + ': Copy';
-                progress.style.color = '#3f51b5';
-                
-                let copySuccess = false;
-                let copyValue = '';
-                
-                // Find target request to paste to
-                let targetReqIndex = -1;
-                if (req.copyToReqNo === -1 || !req.copyToReqNo) {
-                    // Find next control transfer request
-                    for (let j = i + 1; j < chainRequests.length; j++) {
-                        if (chainRequests[j].type === 'control' || !chainRequests[j].type) {
-                            targetReqIndex = j;
-                            break;
-                        }
-                    }
-                } else if (req.copyToReqNo >= 0) {
-                    targetReqIndex = req.copyToReqNo;
-                }
-                
-                if (targetReqIndex === -1 || targetReqIndex >= chainRequests.length) {
-                    console.warn('COPY: Target request not found');
-                } else {
-                    const targetReq = chainRequests[targetReqIndex];
-                    
-                    // Get value to copy (using table helper function from conditions)
-                    const getTableResponseHex = (reqNo) => {
-                        const table = document.getElementById('resultsTable');
-                        if (!table) return '';
-                        const rows = table.getElementsByTagName('tr');
-                        let targetRow = null;
-                        if (reqNo < 0) {
-                            const index = rows.length + reqNo;
-                            if (index >= 0 && index < rows.length) targetRow = rows[index];
-                        } else if (reqNo > 0 && reqNo < rows.length) {
-                            targetRow = rows[reqNo];
-                        }
-                        if (!targetRow) return '';
-                        const cells = targetRow.getElementsByTagName('td');
-                        for (let c = 6; c < cells.length && c < 9; c++) {
-                            const text = cells[c].innerText || cells[c].textContent || '';
-                            if (text && /^[0-9A-Fa-f\s]+$/.test(text.trim()) && text.length > 0) {
-                                return text.replace(/\s/g, '');
-                            }
-                        }
-                        return '';
-                    };
-                    
-                    if (req.copyFromSource) {
-                        // New format with offset support
-                        // Use lastResponse directly for -1 (last request), otherwise parse table
-                        let hexData = '';
-                        if ((req.copyFromReqNo === -1 || req.copyFromReqNo === undefined) && lastResponse && lastResponse.data) {
-                            hexData = lastResponse.data.replace(/\s/g, '');
-                        } else {
-                            hexData = getTableResponseHex(req.copyFromReqNo || -1);
-                        }
-                        const offset = req.copyFromOffset !== undefined ? req.copyFromOffset : 0;
-                        const length = req.copyFromLength !== undefined ? req.copyFromLength : -1;
-                        if (length === -1) {
-                            // All bytes from offset to end
-                            copyValue = hexData.substring(offset * 2).toUpperCase();
-                        } else {
-                            // Specific length from offset
-                            copyValue = hexData.substring(offset * 2, (offset + length) * 2).toUpperCase();
-                        }
-                        let displayValue = copyValue;
-                        if (copyValue && req.copyToField) {
-                            // Numeric fields need little-endian conversion and integer parsing
-                            const numericFields = ['wLength', 'wValue', 'wIndex', 'packetSize', 'deviceAddr', 'dataStageEp', 'endpoint'];
-                            if (numericFields.includes(req.copyToField)) {
-                                // USB uses little-endian: bytes "20 00" = 0x0020 = 32
-                                // Swap byte pairs to convert from LE memory order to numeric
-                                let swappedHex = '';
-                                for (let b = copyValue.length - 2; b >= 0; b -= 2) {
-                                    swappedHex += copyValue.substring(b, b + 2);
-                                }
-                                const numericValue = parseInt(swappedHex, 16) || 0;
-                                targetReq[req.copyToField] = numericValue;
-                                displayValue = numericValue.toString();
-                            } else {
-                                // String fields (like dataBytes) keep hex format
-                                targetReq[req.copyToField] = copyValue;
-                                displayValue = copyValue;
-                            }
-                            copySuccess = true;
-                        }
-                    }
-                }
-                
-                const copyOffset = req.copyFromOffset || 0;
-                const copyLen = req.copyFromLength === -1 ? 'all' : (req.copyFromLength || 'all');
-                const copyDesc = 'Req' + (req.copyFromReqNo || -1) + '[@' + copyOffset + ':' + copyLen + '] -> ' + (req.copyToField || '?');
-                addTableRow('COPY', copyDesc, copySuccess ? displayValue : '-', '-', '-', '-', '-', '-', copySuccess ? 'OK' : 'FAILED');
-                
-            } else if (req.actionType === 'goto') {
-                // Jump to specific index in chain
-                progress.innerText = 'Step ' + (i + 1) + ': Goto';
-                progress.style.color = '#e91e63';
-                
-                const gotoIndex = req.gotoReqNo || 0;
-                if (gotoIndex >= 0 && gotoIndex < chainRequests.length) {
-                    i = gotoIndex - 1; // -1 because loop will increment
-                    addTableRow('GOTO', 'Jump to index ' + gotoIndex, '-', '-', '-', '-', '-', '-', 'OK');
-                } else {
-                    console.warn('GOTO: Invalid index ' + gotoIndex);
-                    addTableRow('GOTO', 'Invalid index ' + gotoIndex, '-', '-', '-', '-', '-', '-', 'FAILED');
-                }
-            }
-            
-            // Continue to next action
-            if (i < chainRequests.length - 1 && chainRunning) {
-                await new Promise(resolve => setTimeout(resolve, delay));
-            }
-            continue;
-        }
-        
-        // Handle Condition
-        if (actionType === 'condition') {
-            progress.innerText = 'Step ' + (i + 1) + ': Condition Check';
-            progress.style.color = '#ff9800';
-            
-            // Helper function to get response hex data from table row
-            const getTableResponseHex = (reqNo) => {
-                const table = document.getElementById('resultsTable');
-                if (!table) return '';
-                
-                const rows = table.getElementsByTagName('tr');
-                let targetRow = null;
-                
-                if (reqNo < 0) {
-                    // Negative numbers: offset from end (-1 = last, -2 = second to last, etc.)
-                    const index = rows.length + reqNo;
-                    if (index >= 0 && index < rows.length) {
-                        targetRow = rows[index];
-                    }
-                } else {
-                    // Positive numbers: specific row by number (1-indexed)
-                    if (reqNo > 0 && reqNo < rows.length) {
-                        targetRow = rows[reqNo];
-                    }
-                }
-                
-                if (!targetRow) return '';
-                
-                const cells = targetRow.getElementsByTagName('td');
-                // Response (Hex) is typically column 7 or 8 depending on table structure
-                // Check for the hex data cell (contains hex chars and spaces)
-                for (let c = 6; c < cells.length && c < 9; c++) {
-                    const text = cells[c].innerText || cells[c].textContent || '';
-                    if (text && /^[0-9A-Fa-f\s]+$/.test(text.trim()) && text.length > 0) {
-                        return text.replace(/\s/g, ''); // Return hex without spaces
-                    }
-                }
-                return '';
-            };
-            
-            // Extract Value A
-            let valueA = '';
-            if (req.valueASource === 'rxbytes' || req.valueASource === 'responsehex') {
-                const hexData = getTableResponseHex(req.valueAReqNo || -1);
-                const length = req.valueALength !== undefined ? req.valueALength : -1;
-                if (length === -1) {
-                    // -1 means all bytes
-                    valueA = hexData.toUpperCase();
-                } else {
-                    // Specific number of bytes
-                    valueA = hexData.substring(0, length * 2).toUpperCase();
-                }
-            } else {
-                // Manual hex value
-                valueA = (req.valueAValue || '').replace(/\s/g, '').replace(/0x/gi, '').toUpperCase();
-            }
-            
-            // Extract Value B
-            let valueB = '';
-            if (req.valueBSource === 'rxbytes' || req.valueBSource === 'responsehex') {
-                const hexData = getTableResponseHex(req.valueBReqNo || -1);
-                const length = req.valueBLength !== undefined ? req.valueBLength : -1;
-                if (length === -1) {
-                    // -1 means all bytes
-                    valueB = hexData.toUpperCase();
-                } else {
-                    // Specific number of bytes
-                    valueB = hexData.substring(0, length * 2).toUpperCase();
-                }
-            } else {
-                // Manual hex value
-                valueB = (req.valueBValue || '').replace(/\s/g, '').replace(/0x/gi, '').toUpperCase();
-            }
-            
-            // Perform comparison (all comparisons in hex)
-            let conditionResult = false;
-            const operator = req.operator || '==';
-            
-            // Convert to numbers for numeric comparisons
-            const numA = parseInt(valueA, 16);
-            const numB = parseInt(valueB, 16);
-            const bothValid = !isNaN(numA) && !isNaN(numB);
-            
-            if (operator === '==') {
-                conditionResult = valueA === valueB;
-            } else if (operator === '!=') {
-                conditionResult = valueA !== valueB;
-            } else if (operator === '<') {
-                conditionResult = bothValid ? numA < numB : false;
-            } else if (operator === '<=') {
-                conditionResult = bothValid ? numA <= numB : false;
-            } else if (operator === '>') {
-                conditionResult = bothValid ? numA > numB : false;
-            } else if (operator === '>=') {
-                conditionResult = bothValid ? numA >= numB : false;
-            } else if (operator === 'contains') {
-                conditionResult = valueA.includes(valueB);
-            }
-            
-            // Add condition result to table
-            // Format: Condition | ValueA | ReqNoA | LenA | Operator | ValueB | ReqNoB | LenB | SUCCESS/FAIL
-            const reqNoA = req.valueASource === 'manual' ? '-' : (req.valueAReqNo !== undefined ? req.valueAReqNo : -1);
-            const lenA = req.valueASource === 'manual' ? '-' : (req.valueALength !== undefined ? (req.valueALength === -1 ? 'all' : req.valueALength) : 'all');
-            const reqNoB = req.valueBSource === 'manual' ? '-' : (req.valueBReqNo !== undefined ? req.valueBReqNo : -1);
-            const lenB = req.valueBSource === 'manual' ? '-' : (req.valueBLength !== undefined ? (req.valueBLength === -1 ? 'all' : req.valueBLength) : 'all');
-            const statusText = conditionResult ? 'SUCCESS' : 'FAIL';
-            addTableRow('Condition', valueA || '-', reqNoA, lenA, operator, valueB || '-', reqNoB, lenB, statusText);
-            
-            // Execute action if condition is true
-            if (conditionResult) {
-                const action = req.action || 'continue';
-                if (action === 'skip_next') {
-                    skipNext = true;
-                } else if (action === 'break') {
-                    chainRunning = false;
-                    break;
-                }
-            }
-            
-            // Continue to next action
-            if (i < chainRequests.length - 1 && chainRunning) {
-                await new Promise(resolve => setTimeout(resolve, delay));
-            }
-            continue;
-        }
-        
-        // Handle bulk/interrupt IN actions
-        if (req.type === 'bulk_in' || req.type === 'interrupt_in') {
-            const epType = req.type === 'bulk_in' ? 'bulk' : 'interrupt';
-            const typeLabel = req.type === 'bulk_in' ? 'BULK IN' : 'INT IN';
-            progress.innerText = typeLabel + ' EP' + req.endpoint + ' (' + (i + 1) + '/' + chainRequests.length + ')';
-            progress.style.color = req.type === 'bulk_in' ? '#17a2b8' : '#20c997';
-            
-            try {
-                const url = '/api/endpoint_in?ep=' + req.endpoint +
-                    '&addr=' + (req.deviceAddr || 0) +
-                    '&channel=' + (req.channel || 1) +
-                    '&len=' + (req.length || 64) +
-                    '&timeout=' + (req.timeout || 1000) +
-                    '&type=' + epType +
-                    '&continuous=' + (req.continuous ? 1 : 0) +
-                    '&max_attempts=' + (req.maxAttempts || 10);
-                
-                const response = await fetch(url);
-                const data = await response.json();
-                
-                lastResponse = data;
-                addTableRow(typeLabel + ' EP' + req.endpoint, epType, 'addr=' + (req.deviceAddr || 0), 
-                    'len=' + (req.length || 64), '-', (req.timeout || 1000) + 'ms', 
-                    data.bytes_received || 0, data.data || '', data.ascii || '');
-                    
-            } catch(e) {
-                addTableRow(typeLabel + ' EP' + req.endpoint, 'ERROR', '-', '-', '-', '-', 0, '-', e.message);
-            }
-            
-            if (i < chainRequests.length - 1 && chainRunning) {
-                await new Promise(resolve => setTimeout(resolve, delay));
-            }
-            continue;
-        }
-        
-        // Handle bulk/interrupt OUT actions
-        if (req.type === 'bulk_out' || req.type === 'interrupt_out') {
-            const epType = req.type === 'bulk_out' ? 'bulk' : 'interrupt';
-            const typeLabel = req.type === 'bulk_out' ? 'BULK OUT' : 'INT OUT';
-            progress.innerText = typeLabel + ' EP' + req.endpoint + ' (' + (i + 1) + '/' + chainRequests.length + ')';
-            progress.style.color = req.type === 'bulk_out' ? '#17a2b8' : '#20c997';
-            
-            try {
-                const dataBytes = encodeURIComponent(req.dataBytes || '');
-                const url = '/api/endpoint_out?ep=' + req.endpoint +
-                    '&addr=' + (req.deviceAddr || 0) +
-                    '&channel=' + (req.channel || 1) +
-                    '&data=' + dataBytes +
-                    '&timeout=' + (req.timeout || 1000) +
-                    '&type=' + epType;
-                
-                const response = await fetch(url, { method: 'POST' });
-                const data = await response.json();
-                
-                addTableRow(typeLabel + ' EP' + req.endpoint, epType, 'addr=' + (req.deviceAddr || 0), 
-                    'data=' + ((req.dataBytes || '').substring(0, 16) + '...'), '-', (req.timeout || 1000) + 'ms', 
-                    data.bytes_sent || 0, '-', data.status === 'success' ? 'OK' : 'FAILED');
-                    
-            } catch(e) {
-                addTableRow(typeLabel + ' EP' + req.endpoint, 'ERROR', '-', '-', '-', '-', 0, '-', e.message);
-            }
-            
-            if (i < chainRequests.length - 1 && chainRunning) {
-                await new Promise(resolve => setTimeout(resolve, delay));
-            }
-            continue;
-        }
-        
-        // Handle USB request actions (original logic)
-        let retryCount = 0;
-        let success = false;
-        
-        // Check if this request has noRetry flag (for overflow packets that expect timeout)
-        const noRetry = req.noRetry === true;
-        const effectiveMaxRetries = noRetry ? 0 : maxBfRetries;
-        
-        while (!success && retryCount <= effectiveMaxRetries && chainRunning) {
-            if (retryCount > 0) {
-                progress.innerText = 'Request ' + (i + 1) + ' RETRY ' + retryCount + '/' + effectiveMaxRetries;
-                progress.style.color = '#ff5722';
-                
-                // Optional USB reset before retry
-                if (resetOnRetry && retryCount >= resetAfterRetries) {
-                    try { await fetch('/api/reset', { method: 'POST' }); } catch(e) {}
-                    await new Promise(resolve => setTimeout(resolve, 200));
-                }
-                
-                // Retry delay
-                await new Promise(resolve => setTimeout(resolve, delay + (retryCount * retryDelayIncrement)));
-            } else {
-                progress.innerText = 'Executing ' + (i + 1) + ' / ' + chainRequests.length + '...';
-                progress.style.color = '#ff9800';
-            }
-            
-            try {
-                const dataBytes = encodeURIComponent(req.dataBytes || '');
-                const apiMaxRetries = noRetry ? 1 : maxRetries;  // Only 1 attempt for noRetry packets
-                const globalTimeout = parseInt(document.getElementById('cfg_timeout').value) || 1000;
-                const apiTimeout = noRetry ? Math.min(globalTimeout, 100) : globalTimeout;  // Max 100ms for noRetry overflow packets
-                const url = '/api/send_request?bmRequestType=' + req.bmRequestType + 
-                    '&bRequest=' + req.bRequest + 
-                    '&wValue=' + req.wValue + 
-                    '&wIndex=' + req.wIndex + 
-                    '&wLength=' + req.wLength + 
-                    '&packetSize=' + req.packetSize + 
-                    '&maxRetries=' + apiMaxRetries +
-                    '&timeout=' + apiTimeout +
-                    '&dataBytes=' + dataBytes + 
-                    '&dataMode=' + (req.dataMode || 'separate') +
-                    '&deviceAddr=' + (req.deviceAddr || 0) +
-                    '&dataStageEp=' + (req.dataStageEp || 0) +
-                    '&setupOnly=' + (req.setupOnly ? 1 : 0);
-                
-                const response = await fetch(url, { method: 'POST' });
-                const data = await response.json();
-                
-                // Check if request succeeded (got data or no error for 0-byte responses)
-                let hasError = data.data && (data.data.includes('TIMEOUT') || data.data.includes('ERROR') || data.data.includes('STALL') || data.data.includes('NAK'));
-                if (data.bytes_received > 0 || (!hasError && data.data !== undefined)) {
-                    success = true;
-                    lastResponse = data; // Store response for COPY TO actions
-                    addTableRow(req.bmRequestType, req.bRequest, req.wValue, req.wIndex, req.wLength, 
-                        req.packetSize, data.bytes_received || 0, data.data || '', data.ascii || '');
-                } else {
-                    // Failed - will retry (unless noRetry flag)
-                    retryCount++;
-                    if (retryCount > effectiveMaxRetries) {
-                        // Show original status (TIMEOUT etc) - noRetry just skips retries
-                        addTableRow(req.bmRequestType, req.bRequest, req.wValue, req.wIndex, req.wLength, 
-                            req.packetSize, data.bytes_received || 0, data.data || 'FAILED', data.ascii || '');
-                    }
-                }
-                
-            } catch (e) {
-                console.error('Chain request failed:', e);
-                retryCount++;
-                if (retryCount > effectiveMaxRetries) {
-                    addTableRow(req.bmRequestType, req.bRequest, req.wValue, req.wIndex, req.wLength, 
-                        req.packetSize, 0, 'ERROR', e.toString());
-                }
-            }
-        }
-        
-        if (i < chainRequests.length - 1 && chainRunning) {
-            await new Promise(resolve => setTimeout(resolve, delay));
-        }
-    }
-    
-    chainRunning = false;
-    chainWaitingForContinue = false;
-    document.getElementById('chainExecBtn').style.display = 'inline-block';
-    document.getElementById('chainStopBtn').style.display = 'none';
-    document.getElementById('chainContinueBtn').style.display = 'none';
-    document.getElementById('chainWaitInfo').style.display = 'none';
-    progress.innerText = 'Chain completed: ' + chainRequests.length + ' steps';
-    progress.style.color = '#28a745';
-}
 
 function continueChain() {
     if (chainWaitingForContinue && chainContinueResolver) {
@@ -2072,10 +1503,266 @@ function stopChain() {
         chainContinueResolver();
         chainContinueResolver = null;
     }
+    // Stop native chain
+    if (chainWs && chainWs.readyState === WebSocket.OPEN) {
+        chainWs.send('stop');
+        chainWs.close();
+    }
+    
+    
     document.getElementById('chainProgress').innerText = 'Stopped at step ' + (chainCurrentIndex + 1);
     document.getElementById('chainProgress').style.color = '#dc3545';
     document.getElementById('chainContinueBtn').style.display = 'none';
     document.getElementById('chainWaitInfo').style.display = 'none';
+    document.getElementById('chainExecBtn').style.display = 'inline-block';
+    document.getElementById('chainStopBtn').style.display = 'none';
+}
+
+
+// Build CSV from current chain
+function buildChainCSV() {
+    let csv = '# USBane Chain Export\n';
+    
+    chainRequests.forEach(req => {
+        const actionType = req.type || 'control';
+        
+        if (actionType === 'waitfor') {
+            if (req.waitType === 'gpio') {
+                csv += 'waitfor,gpio,' + (req.gpioPin || 0) + ',' + (req.gpioLevel || 1) + '\n';
+            } else if (req.waitType === 'delay') {
+                csv += 'waitfor,delay,' + (req.duration || 1000) + '\n';
+            } else if (req.waitType === 'usb_reset') {
+                csv += 'waitfor,usb_reset\n';
+            } else if (req.waitType === 'button') {
+                csv += 'waitfor,button,"' + (req.label || 'Press Continue') + '",' + (req.timeout || 0) + '\n';
+            } else if (req.waitType === 'webhook') {
+                csv += 'waitfor,webhook,"' + (req.triggerId || '') + '",' + (req.timeout || 300) + '\n';
+            } else {
+                // Default to button wait
+                csv += 'waitfor,button,"' + (req.label || 'Press Continue') + '"\n';
+            }
+        } else if (actionType === 'action') {
+            if (req.actionType === 'copy' || req.actionType === 'copy_to') {
+                csv += 'action,copy,' + (req.copyFromSource || 'responsehex') + ',' + 
+                       (req.copyFromReqNo ?? -1) + ',' + (req.copyFromOffset || 0) + ',' + 
+                       (req.copyFromLength || 2) + ',' + (req.copyToField || 'wValue') + ',' + 
+                       (req.copyToReqNo ?? -1) + '\n';
+            } else if (req.actionType === 'goto') {
+                csv += 'action,goto,' + (req.gotoReqNo || 0) + '\n';
+            } else if (req.actionType === 'comment') {
+                csv += 'action,comment,"' + (req.text || '') + '"\n';
+            } else if (req.actionType === 'gpio_out') {
+                csv += 'action,gpio_out,' + (req.gpioPin || 0) + ',' + (req.gpioLevel || 0) + '\n';
+            } else if (req.actionType === 'http') {
+                csv += 'action,http,"' + (req.url || 'http://example.com') + '",' + (req.method || 'get') + '\n';
+            }
+        } else if (actionType === 'condition') {
+            csv += 'condition,' + (req.operator || '==') + ',' + 
+                   (req.aSource || 'responsehex') + ',' + (req.aReqNo ?? -1) + ',' + (req.aLength || 1) + ',"' + (req.aValue || '') + '",' +
+                   (req.bSource || 'manual') + ',' + (req.bReqNo ?? -1) + ',' + (req.bLength || 1) + ',"' + (req.bValue || '') + '",' +
+                   (req.condAction || 'skip') + '\n';
+        } else if (actionType === 'bulk_in' || actionType === 'interrupt_in') {
+            csv += actionType + ',' + (req.endpoint || 1) + ',' + (req.length || 64) + ',' + 
+                   (req.deviceAddr || 0) + ',' + (req.timeout || 1000) + ',' +
+                   (req.continuous ? 1 : 0) + ',' + (req.maxAttempts || 1) + '\n';
+        } else if (actionType === 'bulk_out' || actionType === 'interrupt_out') {
+            csv += actionType + ',' + (req.endpoint || 1) + ',"' + (req.dataBytes || '') + '",' +
+                   (req.deviceAddr || 0) + ',' + (req.timeout || 1000) + '\n';
+        } else {
+            // Control transfer
+            let flags = [];
+            if (req.noRetry) flags.push('noretry');
+            if (req.setupOnly) flags.push('setuponly');
+            if (req.dataStageEp) flags.push('ep' + req.dataStageEp);
+            
+            csv += 'control,' + (req.bmRequestType || '0x00') + ',' + (req.bRequest || '0x00') + ',' +
+                   (req.wValue || '0x0000') + ',' + (req.wIndex || '0x0000') + ',' +
+                   (req.wLength || 0) + ',' + (req.packetSize || 8) + ',' +
+                   (req.dataMode || 'separate') + ',"' + (req.dataBytes || '') + '",' +
+                   (req.deviceAddr || 0) + ',' + flags.join('_') + '\n';
+        }
+    });
+    
+    return csv;
+}
+
+// Native execution via WebSocket
+function executeChainNative() {
+    if (chainRequests.length === 0) {
+        alert('No requests in chain');
+        return;
+    }
+    if (chainRunning) return;
+    
+    chainRunning = true;
+    chainCurrentIndex = 0;
+    
+    document.getElementById('chainExecBtn').style.display = 'none';
+    document.getElementById('chainStopBtn').style.display = 'inline-block';
+    document.getElementById('chainContinueBtn').style.display = 'none';
+    document.getElementById('chainWaitInfo').style.display = 'none';
+    
+    const progress = document.getElementById('chainProgress');
+    progress.innerText = 'Connecting...';
+    progress.style.color = '#17a2b8';
+    
+    // Clear results table
+    document.getElementById('results_table').innerHTML = '';
+    
+    // Build CSV
+    const csv = buildChainCSV();
+    console.log('Chain CSV:', csv);
+    
+    // Connect WebSocket
+    const wsUrl = 'ws://' + window.location.host + '/ws/chain';
+    chainWs = new WebSocket(wsUrl);
+    
+    chainWs.onopen = () => {
+        progress.innerText = 'Executing...';
+        chainWs.send(csv);
+    };
+    
+    chainWs.onmessage = (event) => {
+        try {
+            const msg = JSON.parse(event.data);
+            
+            if (msg.status === 'done') {
+                progress.innerText = 'Chain completed';
+                progress.style.color = '#28a745';
+                finishNativeExecution();
+                return;
+            }
+            
+            if (msg.status === 'error') {
+                progress.innerText = 'Chain error';
+                progress.style.color = '#dc3545';
+                finishNativeExecution();
+                return;
+            }
+            
+            // Handle waiting for button/webhook
+            if (msg.waiting === 'button') {
+                progress.innerText = 'Waiting for button...';
+                progress.style.color = '#ffc107';
+                showButtonWaitModal(msg.label || 'Press Continue');
+                return;
+            }
+            
+            if (msg.waiting === 'webhook') {
+                progress.innerText = 'Waiting for webhook: ' + (msg.trigger_id || '');
+                progress.style.color = '#ffc107';
+                return;
+            }
+            
+            // Result for entry at index msg.i
+            chainCurrentIndex = msg.i;
+            progress.innerText = 'Step ' + (msg.i + 1) + '/' + chainRequests.length;
+            
+            // Add result to table
+            const req = chainRequests[msg.i] || {};
+            const actionType = req.type || 'control';
+            
+            // Determine status text
+            let statusText = msg.s === 0 ? 'OK' : (msg.s === 1 ? 'TIMEOUT' : 'ERROR');
+            
+            // Format row based on type
+            if (actionType === 'control') {
+                addTableRow(
+                    req.bmRequestType || '0x00',
+                    req.bRequest || '0x00',
+                    req.wValue || '0x0000',
+                    req.wIndex || '0x0000',
+                    req.wLength || 0,
+                    req.packetSize || 8,
+                    msg.b || 0,
+                    msg.d || '',
+                    actionType.toUpperCase()
+                );
+            } else if (actionType.includes('_in') || actionType.includes('_out')) {
+                addTableRow(
+                    actionType.toUpperCase(),
+                    'EP' + (req.endpoint || 1),
+                    req.deviceAddr || 0,
+                    '',
+                    req.length || 0,
+                    '',
+                    msg.b || 0,
+                    msg.d || '',
+                    statusText
+                );
+            } else {
+                // Wait/action/condition
+                addTableRow(
+                    actionType.toUpperCase(),
+                    req.waitType || req.actionType || '',
+                    '', '', '', '',
+                    '',
+                    msg.d || '',
+                    statusText
+                );
+            }
+            
+        } catch (e) {
+            console.error('WS parse error:', e);
+        }
+    };
+    
+    chainWs.onerror = (err) => {
+        console.error('WS error:', err);
+        progress.innerText = 'Connection error';
+        progress.style.color = '#dc3545';
+        finishNativeExecution();
+    };
+    
+    chainWs.onclose = () => {
+        if (chainRunning) {
+            progress.innerText = 'Connection closed';
+            progress.style.color = '#888';
+        }
+        finishNativeExecution();
+    };
+}
+
+// Show modal for button wait during chain execution
+function showButtonWaitModal(label) {
+    // Create modal overlay
+    let modal = document.getElementById('buttonWaitModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'buttonWaitModal';
+        modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:10000;';
+        modal.innerHTML = `
+            <div style="background:#1e1e1e;border:2px solid #ffc107;border-radius:12px;padding:30px 40px;text-align:center;max-width:400px;">
+                <div style="font-size:48px;margin-bottom:15px;">⏸️</div>
+                <h3 style="color:#ffc107;margin:0 0 15px 0;">Chain Paused</h3>
+                <p id="buttonWaitLabel" style="color:#ccc;margin:0 0 25px 0;font-size:14px;"></p>
+                <button id="buttonWaitContinue" style="background:#ffc107;color:#000;border:none;padding:12px 30px;font-size:14px;font-weight:bold;border-radius:6px;cursor:pointer;">Continue</button>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        document.getElementById('buttonWaitContinue').onclick = () => {
+            modal.style.display = 'none';
+            // Send continue command to backend
+            if (chainWs && chainWs.readyState === WebSocket.OPEN) {
+                chainWs.send(JSON.stringify({ cmd: 'continue' }));
+            }
+        };
+    }
+    
+    document.getElementById('buttonWaitLabel').innerText = label;
+    modal.style.display = 'flex';
+}
+
+function finishNativeExecution() {
+    chainRunning = false;
+    
+    // Hide button wait modal if visible
+    const modal = document.getElementById('buttonWaitModal');
+    if (modal) modal.style.display = 'none';
+    chainWs = null;
+    document.getElementById('chainExecBtn').style.display = 'inline-block';
+    document.getElementById('chainStopBtn').style.display = 'none';
 }
 
 function exportChainCSV() {
@@ -2083,19 +1770,7 @@ function exportChainCSV() {
         alert('No requests to export');
         return;
     }
-    
-    // Streamlined format: type determines the rest of the fields
-    // control,bmRequestType,bRequest,wValue,wIndex,wLength,packetSize,dataMode,dataBytes,dataStageEp,flags
-    // waitfor,button,label
-    // waitfor,webhook,triggerId
-    // waitfor,gpio,pin,level
-    // waitfor,delay,duration
-    // waitfor,usb_reset,note
-    // action,http,url
-    // action,gpio_out,pin,level
-    // action,comment,text
-    // action,copy_to,copyFrom,copyTo
-    // condition,operator,aSource,aReqNo,aLength,aValue,bSource,bReqNo,bLength,bValue,action
+
     let csv = 'type,p1,p2,p3,p4,p5,p6,p7,p8,p9,p10\n';
     chainRequests.forEach(req => {
         const actionType = req.type || 'control';
@@ -2160,9 +1835,9 @@ function exportChainCSV() {
             // Append flags if set
             let flags = [];
             if (req.noRetry) flags.push('noretry');
-            if (req.setupOnly) flags.push('setup_only');
+            if (req.setupOnly) flags.push('setuponly');
             if (flags.length > 0) {
-                line += ',' + flags.join(',');
+                line += ',' + flags.join('_');
             }
             csv += line + '\n';
         }
@@ -2317,7 +1992,7 @@ function handleChainFileImport(event) {
                 const dataStageEp = parseInt(parts[9]) || 0;
                 const flagsStr = (parts[10] || '').toLowerCase().trim();
                 const hasNoRetry = flagsStr.includes('noretry');
-                const hasSetupOnly = flagsStr.includes('setup_only');
+                const hasSetupOnly = flagsStr.includes('setuponly');
                 chainRequests.push({
                     type: 'control',
                     bmRequestType: parts[1],
@@ -2446,7 +2121,9 @@ function sortTable(colIdx) {
 function addTableRow(bmReqType, bReq, wVal, wIdx, wLen, pktSize, rxBytes, respHex, ascii) {
     req_count++;
     let isFailed = (respHex === 'FAILED' || respHex === 'ERROR');
-    let row = '<tr data-rxbytes="' + rxBytes + '" data-resphex="' + (respHex || '').toUpperCase().replace(/\s/g,'') + '" data-failed="' + (isFailed ? '1' : '0') + '">';
+    let fullHex = (respHex || '').toUpperCase().replace(/\s/g,'');
+    let fullAscii = ascii || '';
+    let row = '<tr data-rxbytes="' + rxBytes + '" data-resphex="' + fullHex + '" data-ascii="' + fullAscii.replace(/"/g, '&quot;') + '" data-failed="' + (isFailed ? '1' : '0') + '">';
     row += '<td data-sort="' + req_count + '" style="padding:4px;border:1px solid #555;">' + req_count + '</td>';
     row += '<td style="padding:4px;border:1px solid #555;">' + bmReqType + '</td>';
     row += '<td style="padding:4px;border:1px solid #555;">' + bReq + '</td>';
@@ -2455,12 +2132,81 @@ function addTableRow(bmReqType, bReq, wVal, wIdx, wLen, pktSize, rxBytes, respHe
     row += '<td style="padding:4px;border:1px solid #555;">' + wLen + '</td>';
     row += '<td data-sort="' + pktSize + '" style="padding:4px;border:1px solid #555;">' + pktSize + '</td>';
     row += '<td data-sort="' + rxBytes + '" style="padding:4px;border:1px solid #555;">' + rxBytes + '</td>';
-    let respData = (respHex || '').substring(0, 60) + (respHex && respHex.length > 60 ? '...' : '');
-    row += '<td style="padding:4px;border:1px solid #555;">' + respData + '</td>';
-    let asciiData = (ascii || '').substring(0, 30) + (ascii && ascii.length > 30 ? '...' : '');
-    row += '<td style="padding:4px;border:1px solid #555;">' + asciiData + '</td></tr>';
+    
+    // Truncate hex but make clickable to show full
+    let respData = fullHex.substring(0, 32) + (fullHex.length > 32 ? '...' : '');
+    let hexStyle = fullHex.length > 32 ? 'cursor:pointer;color:#4da6ff;text-decoration:underline;' : '';
+    row += '<td style="padding:4px;border:1px solid #555;max-width:150px;overflow:hidden;' + hexStyle + '" onclick="showFullResponse(this.parentNode)">' + respData + '</td>';
+    
+    // Truncate ascii but make clickable
+    let asciiData = fullAscii.substring(0, 16) + (fullAscii.length > 16 ? '...' : '');
+    let asciiStyle = fullAscii.length > 16 ? 'cursor:pointer;color:#4da6ff;text-decoration:underline;' : '';
+    row += '<td style="padding:4px;border:1px solid #555;max-width:100px;overflow:hidden;' + asciiStyle + '" onclick="showFullResponse(this.parentNode)">' + asciiData + '</td></tr>';
+    
     document.getElementById('results_table').insertAdjacentHTML('afterbegin', row);
     applyFilters();  // Apply current filters to new row
+}
+
+// Show full response data in a modal
+function showFullResponse(row) {
+    let hex = row.dataset.resphex || '';
+    let ascii = row.dataset.ascii || '';
+    
+    if (!hex && !ascii) return;
+    
+    // Create or get modal
+    let modal = document.getElementById('responseModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'responseModal';
+        modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:1000;';
+        modal.innerHTML = `
+            <div style="background:#1a1a1a;border:1px solid #555;border-radius:8px;padding:20px;max-width:90%;max-height:80%;overflow:auto;">
+                <h3 style="margin-top:0;color:#fff;">Response Data</h3>
+                <div style="margin-bottom:10px;">
+                    <label style="color:#aaa;">Hex (${hex.length/2} bytes):</label>
+                    <textarea id="modalHex" readonly style="width:100%;height:150px;background:#0a0a0a;color:#4da6ff;border:1px solid #444;font-family:monospace;font-size:12px;padding:8px;margin-top:4px;"></textarea>
+                </div>
+                <div style="margin-bottom:15px;">
+                    <label style="color:#aaa;">ASCII:</label>
+                    <textarea id="modalAscii" readonly style="width:100%;height:80px;background:#0a0a0a;color:#8f8;border:1px solid #444;font-family:monospace;font-size:12px;padding:8px;margin-top:4px;"></textarea>
+                </div>
+                <div style="text-align:right;">
+                    <button onclick="copyResponseToClipboard('hex')" style="padding:8px 16px;background:#444;color:#fff;border:none;cursor:pointer;margin-right:8px;">Copy Hex</button>
+                    <button onclick="copyResponseToClipboard('ascii')" style="padding:8px 16px;background:#444;color:#fff;border:none;cursor:pointer;margin-right:8px;">Copy ASCII</button>
+                    <button onclick="document.getElementById('responseModal').style.display='none'" style="padding:8px 16px;background:#666;color:#fff;border:none;cursor:pointer;">Close</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) modal.style.display = 'none';
+        });
+    }
+    
+    // Format hex with spaces every 2 chars for readability
+    let formattedHex = hex.match(/.{1,2}/g)?.join(' ') || '';
+    
+    document.getElementById('modalHex').value = formattedHex;
+    document.getElementById('modalAscii').value = ascii;
+    modal.querySelector('label').textContent = 'Hex (' + (hex.length/2) + ' bytes):';
+    modal.style.display = 'flex';
+}
+
+function copyResponseToClipboard(type) {
+    let textarea = document.getElementById(type === 'hex' ? 'modalHex' : 'modalAscii');
+    textarea.select();
+    document.execCommand('copy');
+    
+    // Brief visual feedback
+    let btn = event.target;
+    let origText = btn.textContent;
+    btn.textContent = 'Copied!';
+    btn.style.background = '#28a745';
+    setTimeout(() => {
+        btn.textContent = origText;
+        btn.style.background = '#444';
+    }, 1000);
 }
 
 function selectFilterMode(mode) {
@@ -3346,7 +3092,7 @@ function sendReboot() {
     .catch(e => alert('Reboot initiated (connection lost is expected)'));
 }
 
-function sendRequest() {
+async function sendRequest() {
     let btn = document.getElementById('sendBtn');
     btn.style.background = '#dc3545';
     btn.innerText = 'Sending...';
@@ -3358,41 +3104,49 @@ function sendRequest() {
     let wIndex = document.getElementById('wIndex').value;
     let wLength = parseInt(document.getElementById('wLength').value);
     let packetSize = parseInt(document.getElementById('packetSize').value);
-    let maxRetries = parseInt(document.getElementById('cfg_maxRetries').value);
     let timeout = parseInt(document.getElementById('cfg_timeout').value) || 1000;
-    let dataBytes = encodeURIComponent(document.getElementById('dataBytes').value);
-    let dataMode = document.getElementById('dataMode').value;
+    let dataBytes = document.getElementById('dataBytes').value;
     let deviceAddr = parseInt(document.getElementById('ctrl_deviceAddr').value) || 0;
     let dataStageEp = parseInt(document.getElementById('ctrl_dataStageEp').value) || 0;
-    let setupOnly = document.getElementById('ctrl_setupOnly').checked ? 1 : 0;
+    let setupOnly = document.getElementById('ctrl_setupOnly').checked;
     
-    let url = '/api/send_request?bmRequestType=' + bmRequestType + 
-              '&bRequest=' + bRequest + 
-              '&wValue=' + wValue + 
-              '&wIndex=' + wIndex + 
-              '&wLength=' + wLength + 
-              '&packetSize=' + packetSize + 
-              '&maxRetries=' + maxRetries + 
-              '&timeout=' + timeout + 
-              '&dataBytes=' + dataBytes + 
-              '&dataMode=' + dataMode +
-              '&deviceAddr=' + deviceAddr +
-              '&dataStageEp=' + dataStageEp +
-              '&setupOnly=' + setupOnly;
+    try {
+        const result = await sendNativeCommand({
+            cmd: 'single',
+            bmRequestType: bmRequestType,
+            bRequest: bRequest,
+            wValue: wValue,
+            wIndex: wIndex,
+            wLength: wLength,
+            packetSize: packetSize,
+            timeout: timeout,
+            data: dataBytes,
+            deviceAddr: deviceAddr,
+            dataStageEp: dataStageEp,
+            setupOnly: setupOnly
+        });
+        
+        // Convert hex to ASCII
+        let ascii = '';
+        if (result.d) {
+            for (let i = 0; i < result.d.length; i += 2) {
+                const byte = parseInt(result.d.substr(i, 2), 16);
+                ascii += (byte >= 32 && byte < 127) ? String.fromCharCode(byte) : '.';
+            }
+        }
+        
+        addTableRow(bmRequestType, bRequest, wValue, wIndex, wLength, packetSize, 
+                    result.b || 0, result.d || '', ascii);
+        
+    } catch (e) {
+        console.error('Request failed:', e);
+        addTableRow(bmRequestType, bRequest, wValue, wIndex, wLength, packetSize, 
+                    0, '', 'ERROR');
+    }
     
-    fetch(url, { method: 'POST' })
-    .then(r => r.json())
-    .then(d => {
-        addTableRow(bmRequestType, bRequest, wValue, wIndex, wLength, packetSize, d.bytes_received || 0, d.data || '', d.ascii || '');
-        btn.style.background = '#28a745';
-        btn.innerText = 'Execute Request';
-        btn.disabled = false;
-    })
-    .catch(e => {
-        btn.style.background = '#28a745';
-        btn.innerText = 'Execute Request';
-        btn.disabled = false;
-    });
+    btn.style.background = '#28a745';
+    btn.innerText = 'Execute Request';
+    btn.disabled = false;
 }
 
 // ============================================
@@ -3524,7 +3278,9 @@ function parseExcludeList(excludeStr) {
     return excludeStr.split(',').map(v => parseHexOrDec(v.trim())).filter(v => !isNaN(v));
 }
 
-function startBruteforce() {
+let bfSocket = null;
+
+async function startBruteforce() {
     if(bf_running) return;
     bf_running = true;
     bf_count = 0;
@@ -3532,136 +3288,98 @@ function startBruteforce() {
     document.getElementById('bf_start').style.display = 'none';
     document.getElementById('bf_stop').style.display = 'inline-block';
     document.getElementById('bf_progress').style.display = 'block';
-    let fields = [];
-    if(document.getElementById('bf_bmRequestType').checked) fields.push({name:'bmRequestType', start:parseHexOrDec(document.getElementById('bf_bmRequestType_start').value), end:parseHexOrDec(document.getElementById('bf_bmRequestType_end').value), exclude:parseExcludeList(document.getElementById('bf_bmRequestType_exclude').value), current:0});
-    if(document.getElementById('bf_bRequest').checked) fields.push({name:'bRequest', start:parseHexOrDec(document.getElementById('bf_bRequest_start').value), end:parseHexOrDec(document.getElementById('bf_bRequest_end').value), exclude:parseExcludeList(document.getElementById('bf_bRequest_exclude').value), current:0});
-    if(document.getElementById('bf_wValueHi').checked) fields.push({name:'wValueHi', start:parseHexOrDec(document.getElementById('bf_wValueHi_start').value), end:parseHexOrDec(document.getElementById('bf_wValueHi_end').value), exclude:parseExcludeList(document.getElementById('bf_wValueHi_exclude').value), current:0});
-    if(document.getElementById('bf_wValueLo').checked) fields.push({name:'wValueLo', start:parseHexOrDec(document.getElementById('bf_wValueLo_start').value), end:parseHexOrDec(document.getElementById('bf_wValueLo_end').value), exclude:parseExcludeList(document.getElementById('bf_wValueLo_exclude').value), current:0});
-    if(document.getElementById('bf_wIndexHi').checked) fields.push({name:'wIndexHi', start:parseHexOrDec(document.getElementById('bf_wIndexHi_start').value), end:parseHexOrDec(document.getElementById('bf_wIndexHi_end').value), exclude:parseExcludeList(document.getElementById('bf_wIndexHi_exclude').value), current:0});
-    if(document.getElementById('bf_wIndexLo').checked) fields.push({name:'wIndexLo', start:parseHexOrDec(document.getElementById('bf_wIndexLo_start').value), end:parseHexOrDec(document.getElementById('bf_wIndexLo_end').value), exclude:parseExcludeList(document.getElementById('bf_wIndexLo_exclude').value), current:0});
-    if(document.getElementById('bf_wLength').checked) fields.push({name:'wLength', start:parseHexOrDec(document.getElementById('bf_wLength_start').value), end:parseHexOrDec(document.getElementById('bf_wLength_end').value), exclude:parseExcludeList(document.getElementById('bf_wLength_exclude').value), current:0});
-    if(document.getElementById('bf_packetSize').checked) fields.push({name:'packetSize', start:parseHexOrDec(document.getElementById('bf_packetSize_start').value), end:parseHexOrDec(document.getElementById('bf_packetSize_end').value), exclude:parseExcludeList(document.getElementById('bf_packetSize_exclude').value), current:0});
-    if(fields.length === 0) { alert('Select at least one field to bruteforce'); stopBruteforce(); return; }
-    // Initialize current values, skipping excluded start values
-    fields.forEach(f => {
-        f.current = f.start;
-        // Skip if start value is excluded
-        while(f.current <= f.end && f.exclude && f.exclude.includes(f.current)) {
-            f.current++;
-        }
+    document.getElementById('bf_progress').innerText = 'Starting native bruteforce...';
+    
+    // Build field configs for native execution
+    const fieldNames = ['bmRequestType', 'bRequest', 'wValueHi', 'wValueLo', 'wIndexHi', 'wIndexLo', 'wLength', 'packetSize'];
+    const cmd = {
+        cmd: 'bruteforce',
+        delay: parseInt(document.getElementById('bf_delay').value) || 50
+    };
+    
+    let hasIteration = false;
+    fieldNames.forEach(name => {
+        const iterate = document.getElementById('bf_' + name).checked;
+        const start = parseHexOrDec(document.getElementById('bf_' + name + '_start').value);
+        const end = parseHexOrDec(document.getElementById('bf_' + name + '_end').value);
+        
+        cmd[name] = {
+            start: start,
+            end: iterate ? end : start,
+            iterate: iterate
+        };
+        
+        if (iterate) hasIteration = true;
     });
-    let delay = parseInt(document.getElementById('bf_delay').value);
-    executeBruteforce(fields, delay);
+    
+    if (!hasIteration) {
+        alert('Select at least one field to bruteforce');
+        stopBruteforce();
+        return;
+    }
+    
+    try {
+        bfSocket = await getUsbSocket();
+        
+        bfSocket.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                
+                if (data.status === 'done') {
+                    document.getElementById('bf_progress').innerText = 'Complete. Total requests: ' + (data.total || bf_count);
+                    stopBruteforce();
+                    return;
+                }
+                
+                if (data.i !== undefined) {
+                    bf_count = data.i + 1;
+                    document.getElementById('bf_progress').innerText = 'Request ' + bf_count;
+                    
+                    // Convert hex to ASCII
+                    let ascii = '';
+                    if (data.d) {
+                        for (let i = 0; i < data.d.length; i += 2) {
+                            const byte = parseInt(data.d.substr(i, 2), 16);
+                            ascii += (byte >= 32 && byte < 127) ? String.fromCharCode(byte) : '.';
+                        }
+                    }
+                    
+                    // Format USB params for display
+                    const bmRT = data.bmRT !== undefined ? '0x' + data.bmRT.toString(16).padStart(2, '0') : '';
+                    const bReq = data.bReq !== undefined ? '0x' + data.bReq.toString(16).padStart(2, '0') : '';
+                    const wVal = data.wVal !== undefined ? '0x' + data.wVal.toString(16).padStart(4, '0') : '';
+                    const wIdx = data.wIdx !== undefined ? '0x' + data.wIdx.toString(16).padStart(4, '0') : '';
+                    const wLen = data.wLen !== undefined ? data.wLen : '';
+                    const pkt = data.pkt !== undefined ? data.pkt : '';
+                    
+                    addTableRow(bmRT, bReq, wVal, wIdx, wLen, pkt, 
+                                data.b || 0, data.d || '', 
+                                data.s === 0 ? ascii : 'FAILED');
+                }
+            } catch (e) {
+                console.error('BF parse error:', e);
+            }
+        };
+        
+        bfSocket.send(JSON.stringify(cmd));
+        
+    } catch (e) {
+        console.error('Bruteforce failed:', e);
+        document.getElementById('bf_progress').innerText = 'Error: ' + e.message;
+        stopBruteforce();
+    }
 }
 
 function stopBruteforce() {
     bf_running = false;
+    
+    if (bfSocket && bfSocket.readyState === WebSocket.OPEN) {
+        bfSocket.send('stop');
+    }
+    
     document.getElementById('bf_start').style.display = 'inline-block';
     document.getElementById('bf_stop').style.display = 'none';
     document.getElementById('bf_progress').innerText = 'Stopped. Total requests: ' + bf_count;
-}
-
-function executeBruteforce(fields, delay) {
-    if(!bf_running) { return; }
-    
-    // Read base values from bruteforce start fields (used as fixed values when not iterating)
-    let bmRequestType = document.getElementById('bf_bmRequestType_start').value;
-    let bRequest = document.getElementById('bf_bRequest_start').value;
-    let wValueHi = parseHexOrDec(document.getElementById('bf_wValueHi_start').value);
-    let wValueLo = parseHexOrDec(document.getElementById('bf_wValueLo_start').value);
-    let wIndexHi = parseHexOrDec(document.getElementById('bf_wIndexHi_start').value);
-    let wIndexLo = parseHexOrDec(document.getElementById('bf_wIndexLo_start').value);
-    let wLength = parseInt(document.getElementById('bf_wLength_start').value);
-    let packetSize = parseInt(document.getElementById('bf_packetSize_start').value);
-    let maxRetries = parseInt(document.getElementById('cfg_maxRetries').value);
-    let timeout = parseInt(document.getElementById('cfg_timeout').value) || 1000;
-    let dataBytes = encodeURIComponent(document.getElementById('bf_dataBytes_start').value);
-    let dataMode = document.getElementById('bf_dataMode').value;
-    
-    // Override with current bruteforce iteration values
-    fields.forEach(f => {
-        if(f.name === 'bmRequestType') bmRequestType = '0x' + f.current.toString(16).padStart(2, '0');
-        if(f.name === 'bRequest') bRequest = '0x' + f.current.toString(16).padStart(2, '0');
-        if(f.name === 'wValueHi') wValueHi = f.current;
-        if(f.name === 'wValueLo') wValueLo = f.current;
-        if(f.name === 'wIndexHi') wIndexHi = f.current;
-        if(f.name === 'wIndexLo') wIndexLo = f.current;
-        if(f.name === 'wLength') wLength = f.current;
-        if(f.name === 'packetSize') packetSize = f.current;
-    });
-    
-    // Combine Hi/Lo bytes into full values
-    let wValue = '0x' + ((wValueHi << 8) | wValueLo).toString(16).padStart(4, '0');
-    let wIndex = '0x' + ((wIndexHi << 8) | wIndexLo).toString(16).padStart(4, '0');
-    bf_count++;
-    document.getElementById('bf_progress').innerText = 'Request ' + bf_count + ': bmReqType=' + bmRequestType + ' bReq=' + bRequest + ' wVal=' + wValue + ' wIdx=' + wIndex + ' wLen=' + wLength;
-    fetch('/api/send_request?bmRequestType=' + bmRequestType + '&bRequest=' + bRequest + '&wValue=' + wValue + '&wIndex=' + wIndex + '&wLength=' + wLength + '&packetSize=' + packetSize + '&maxRetries=' + maxRetries + '&timeout=' + timeout + '&dataBytes=' + dataBytes + '&dataMode=' + dataMode, { method: 'POST' })
-    .then(r => r.json())
-    .then(d => {
-        // Success if: got bytes, OR empty response without error (e.g. SET_INTERFACE)
-        let hasError = d.data && (d.data.includes('TIMEOUT') || d.data.includes('ERROR') || d.data.includes('STALL') || d.data.includes('NAK'));
-        let success = (d.bytes_received > 0) || (!hasError && d.data !== undefined);
-        
-        if (!success && bf_retries < getBfMaxRetries()) {
-            // Request failed/timed out - retry same request
-            bf_retries++;
-            document.getElementById('bf_progress').innerText = 'Request ' + bf_count + ' RETRY ' + bf_retries + '/' + getBfMaxRetries() + ': wIdx=' + wIndex;
-            // Wait a bit longer before retry, optionally send USB reset
-            let retryDelay = delay + (bf_retries * getRetryDelayIncrement());
-            if (getResetOnRetry() && bf_retries >= getResetAfterRetries()) {
-                // Send USB reset before retry
-                fetch('/api/reset', { method: 'POST' }).then(() => {
-                    setTimeout(() => executeBruteforce(fields, delay), retryDelay + 200);
-                }).catch(() => {
-                    setTimeout(() => executeBruteforce(fields, delay), retryDelay);
-                });
-                return;
-            }
-            setTimeout(() => executeBruteforce(fields, delay), retryDelay);
-            return;
-        }
-        
-        // Success or max retries reached - add row and move to next
-        if (!success && bf_retries >= getBfMaxRetries()) {
-            addTableRow(bmRequestType, bRequest, wValue, wIndex, wLength, packetSize, 0, 'FAILED', 'MAX RETRIES');
-        } else {
-            addTableRow(bmRequestType, bRequest, wValue, wIndex, wLength, packetSize, d.bytes_received || 0, d.data || '', d.ascii || '');
-        }
-        
-        bf_retries = 0;  // Reset retry counter for next request
-        
-        if(!bf_running) { return; }
-        let done = false;
-        for(let i = fields.length - 1; i >= 0; i--) {
-            // Increment and skip excluded values
-            do {
-                fields[i].current++;
-            } while(fields[i].current <= fields[i].end && fields[i].exclude && fields[i].exclude.includes(fields[i].current));
-            
-            if(fields[i].current <= fields[i].end) break;
-            fields[i].current = fields[i].start;
-            // Skip excluded values at start
-            while(fields[i].current <= fields[i].end && fields[i].exclude && fields[i].exclude.includes(fields[i].current)) {
-                fields[i].current++;
-            }
-            if(i === 0) done = true;
-        }
-        if(done) { stopBruteforce(); return; }
-        setTimeout(() => executeBruteforce(fields, delay), delay);
-    })
-    .catch(e => { 
-        if(bf_running) {
-            // Network error - retry
-            bf_retries++;
-            if (bf_retries < getBfMaxRetries()) {
-                setTimeout(() => executeBruteforce(fields, delay), delay + 1000);
-            } else {
-                addTableRow(bmRequestType, bRequest, wValue, wIndex, wLength, packetSize, 0, 'ERROR', e.toString());
-                bf_retries = 0;
-                setTimeout(() => executeBruteforce(fields, delay), delay);
-            }
-        }
-    });
 }
 
 // ============================================

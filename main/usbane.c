@@ -4,8 +4,9 @@
  * Direct DWC2 USB controller access for security research
  */
 
-#include "usb_malformed.h"
+#include "usbane.h"
 #include <string.h>
+#include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -21,7 +22,7 @@
 #include "hal/usb_dwc_ll.h"
 #include "hal/usb_wrap_ll.h"
 
-static const char *TAG = "USB_MALFORMED";
+static const char *TAG = "USBANE";
 static const char *NVS_NAMESPACE = "usb_config";
 
 // USB PHY handle
@@ -156,7 +157,7 @@ esp_err_t usb_save_phy_config(uint8_t otg_mode, uint8_t otg_speed) {
 }
 
 // Forward declarations
-static esp_err_t usb_malformed_init_impl(void);
+static esp_err_t usbane_init_impl(void);
 static esp_err_t usb_send_reset_impl(void);
 static esp_err_t usb_send_packet_impl(const usb_packet_config_t *config);
 static bool usb_is_device_connected_impl(void);
@@ -187,7 +188,7 @@ static void usb_worker_task(void *arg) {
             switch (op_type) {
                 case USB_OP_INIT:
                     ESP_LOGI(TAG, "Worker: USB_OP_INIT");
-                    pending_op.result = usb_malformed_init_impl();
+                    pending_op.result = usbane_init_impl();
                     break;
                     
                 case USB_OP_RESET:
@@ -304,8 +305,8 @@ esp_err_t usb_handler_start(void) {
     }
     ESP_LOGI(TAG, "Semaphores created OK");
     
-    // Create worker task on Core 0 (USB peripheral often needs Core 0)
-    ESP_LOGI(TAG, "Creating worker task on Core 0 (USB peripheral requires Core 0)...");
+    // Create worker task on Core 1 (dedicated USB core, separate from networking)
+    ESP_LOGI(TAG, "Creating worker task on Core 1 (dedicated USB core)...");
     BaseType_t ret = xTaskCreatePinnedToCore(
         usb_worker_task,
         "usb_worker",
@@ -313,7 +314,7 @@ esp_err_t usb_handler_start(void) {
         NULL,
         5,                          // Priority
         &usb_worker_handle,
-        0                           // Core 0 (PRO_CPU) - USB peripheral
+        1                           // Core 1 (APP_CPU) - USB operations
     );
     
     if (ret != pdPASS) {
@@ -340,7 +341,7 @@ esp_err_t usb_handler_start(void) {
 // Public API (Executes on Core 1 via Worker Task)
 // ============================================================================
 
-esp_err_t usb_malformed_init(void) {
+esp_err_t usbane_init(void) {
     return usb_execute_on_core1(USB_OP_INIT, NULL, NULL, 10000);
 }
 
@@ -391,25 +392,28 @@ void usb_clear_device_info_cache(void) {
 esp_err_t usb_endpoint_in_continuous(uint8_t endpoint, uint8_t device_addr, usb_endpoint_type_t ep_type,
                                     uint8_t channel, uint8_t *buffer, size_t max_len,
                                     uint32_t max_attempts, uint32_t attempt_timeout_ms, size_t *bytes_read) {
-    if (max_attempts == -1) {
-        ESP_LOGI(TAG, "EP%d IN: Continuous read - infinite attempts of %ldms each", endpoint, attempt_timeout_ms);
+    // Use UINT32_MAX to indicate infinite attempts (instead of -1 which is problematic for unsigned)
+    bool infinite_mode = (max_attempts == UINT32_MAX);
+    
+    if (infinite_mode) {
+        ESP_LOGI(TAG, "EP%d IN: Continuous read - infinite attempts of %"PRIu32"ms each", endpoint, attempt_timeout_ms);
     } else {
-        ESP_LOGI(TAG, "EP%d IN: Continuous read - up to %ld attempts of %ldms each", endpoint, max_attempts, attempt_timeout_ms);
+        ESP_LOGI(TAG, "EP%d IN: Continuous read - up to %"PRIu32" attempts of %"PRIu32"ms each", endpoint, max_attempts, attempt_timeout_ms);
     }
 
     uint32_t attempt = 1;
-    while (max_attempts == -1 || attempt <= max_attempts) {
-        if (max_attempts == -1) {
-            ESP_LOGD(TAG, "EP%d IN: Attempt %ld (infinite)", endpoint, attempt);
+    while (infinite_mode || attempt <= max_attempts) {
+        if (infinite_mode) {
+            ESP_LOGD(TAG, "EP%d IN: Attempt %"PRIu32" (infinite)", endpoint, attempt);
         } else {
-            ESP_LOGD(TAG, "EP%d IN: Attempt %ld/%ld", endpoint, attempt, max_attempts);
+            ESP_LOGD(TAG, "EP%d IN: Attempt %"PRIu32"/%"PRIu32, endpoint, attempt, max_attempts);
         }
 
         esp_err_t ret = usb_endpoint_in(endpoint, device_addr, ep_type, channel,
                                        buffer, max_len, attempt_timeout_ms, bytes_read);
 
         if (ret == ESP_OK && bytes_read && *bytes_read > 0) {
-            ESP_LOGI(TAG, "EP%d IN: Success on attempt %ld - received %zu bytes",
+            ESP_LOGI(TAG, "EP%d IN: Success on attempt %"PRIu32" - received %zu bytes",
                      endpoint, attempt, *bytes_read);
             return ESP_OK;
         }
@@ -419,10 +423,10 @@ esp_err_t usb_endpoint_in_continuous(uint8_t endpoint, uint8_t device_addr, usb_
         attempt++;
     }
 
-    if (max_attempts == -1) {
-        ESP_LOGW(TAG, "EP%d IN: Failed after %ld attempts (continuous mode stopped)", endpoint, attempt - 1);
+    if (infinite_mode) {
+        ESP_LOGW(TAG, "EP%d IN: Failed after %"PRIu32" attempts (continuous mode stopped)", endpoint, attempt - 1);
     } else {
-        ESP_LOGW(TAG, "EP%d IN: Failed after %ld attempts", endpoint, max_attempts);
+        ESP_LOGW(TAG, "EP%d IN: Failed after %"PRIu32" attempts", endpoint, max_attempts);
     }
     return ESP_ERR_TIMEOUT;
 }
@@ -481,7 +485,7 @@ static void usb_flush_all_fifos(void) {
 // Internal Implementation
 // ============================================================================
 
-static esp_err_t usb_malformed_init_impl(void) {
+static esp_err_t usbane_init_impl(void) {
     ESP_LOGI(TAG, "Initializing USB Host hardware (bypass mode)");
     
     // 1. Initialize USB PHY
@@ -618,7 +622,7 @@ static bool usb_is_device_connected_impl(void) {
     return usb_dwc_ll_hprt_get_conn_status(hal_context.dev);
 }
 
-esp_err_t usb_malformed_get_conn_status(void) {
+esp_err_t usbane_get_conn_status(void) {
     return usb_is_device_connected() ? ESP_OK : ESP_FAIL;  // Uses public API which sends command
 }
 
@@ -640,6 +644,14 @@ static esp_err_t usb_send_packet_impl(const usb_packet_config_t *config) {
     if (config->packet_size > USB_MAX_PACKET_SIZE) {
         ESP_LOGE(TAG, "Invalid packet_size: %d (max %d)", config->packet_size, USB_MAX_PACKET_SIZE);
         return ESP_ERR_INVALID_ARG;
+    }
+    
+    // Auto-reset if device recently connected (same as usb_get_device_info_impl)
+    if (usb_needs_reset) {
+        ESP_LOGI(TAG, "Auto-reset: Device needs initialization");
+        usb_send_reset_impl();
+        usb_needs_reset = false;
+        vTaskDelay(pdMS_TO_TICKS(100));  // Wait for device to be ready
     }
     
     const char* size_status = config->packet_size == 8 ? "(standard)" : 
@@ -711,13 +723,16 @@ static esp_err_t usb_send_packet_impl(const usb_packet_config_t *config) {
     usb_dwc_ll_hcchar_set_ep_num(chan_regs, config->endpoint);
     usb_dwc_ll_hcchar_set_dev_addr(chan_regs, config->device_addr);
     usb_dwc_ll_hcchar_set_ep_type(chan_regs, USB_DWC_XFER_TYPE_CTRL);
-    usb_dwc_ll_hcchar_set_mps(chan_regs, config->max_packet_size);
+    // For oversized SETUP packets, set MPS to packet_size so DWC2 sends as single packet
+    uint16_t effective_mps = (config->packet_size > 8) ? config->packet_size : config->max_packet_size;
+    usb_dwc_ll_hcchar_set_mps(chan_regs, effective_mps);
     usb_dwc_ll_hcchar_set_dir(chan_regs, 0);  // OUT for SETUP
     
     // Configure transfer size
     usb_dwc_ll_hctsiz_init(chan_regs);
     chan_regs->hctsiz_reg.xfersize = config->packet_size;
-    chan_regs->hctsiz_reg.pktcnt = (config->packet_size + config->max_packet_size - 1) / config->max_packet_size;
+    // Force pktcnt=1 for SETUP to ensure single packet transmission
+    chan_regs->hctsiz_reg.pktcnt = 1;
     chan_regs->hctsiz_reg.pid = 3;  // SETUP PID (MDATA)
     
     // Setup DMA - simple direct buffer (baseline approach that works)
@@ -756,29 +771,19 @@ static esp_err_t usb_send_packet_impl(const usb_packet_config_t *config) {
     }
     
     // If setup_only, return immediately after SETUP (skip DATA/STATUS stages)
-    // This is useful for exploit overflows where we don't want to wait for device response
+    // Useful when the SETUP packet itself triggers the desired device behavior
     if (config->setup_only) {
         ESP_LOGI(TAG, "setup_only mode: returning after SETUP (no DATA stage)");
         return ESP_OK;
     }
     
-    // If data_stage_ep is specified, redirect DATA IN to that endpoint
+    // If data_stage_ep is specified, redirect DATA IN to a different endpoint
+    // This allows reading from alternate endpoints after triggering a control transfer
     if (config->data_stage_ep > 0 && config->expect_response) {
         ESP_LOGI(TAG, "Redirecting DATA IN to EP%d after EP0 trigger", config->data_stage_ep);
         
-        // CRITICAL: First, send an IN token to EP0 to trigger USBCtrlTrfInHandler()!
-        // The flow for the XOR Strategy is:
-        // 1. SETUP packet received - hardware DMAs payload over pBDTEntryIn[0]
-        // 2. USBCtrlEPServiceComplete() called - firmware writes wLength to pBDTEntryIn[0]->CNT
-        //    (This is a junk write to target - 2 ^ 8 + 2)
-        // 3. IN token received - USBCtrlTrfInHandler() called
-        // 4. pBDTEntryIn[0] XORed with 0x08 -> Points to target - 2
-        // 5. USBCtrlTrfTxService() called again -> writes wLength to pBDTEntryIn[0]->CNT
-        //    (This is our real target register write!)
-        //
-        // The IN token here is required to trigger steps 3-5.
-        ESP_LOGI(TAG, "Sending IN token to EP0 to trigger XOR and register write...");
-        ESP_LOGI(TAG, "Expected: wLength=%d will be written to target register", config->wLength);
+        // First, send an IN token to EP0 to trigger device state machine
+        ESP_LOGI(TAG, "Sending IN token to EP0 to advance device state...");
         
         // Quick DATA IN to EP0 - just to trigger the write, we don't care about the result
         uint8_t dummy_buffer[64];
@@ -789,24 +794,24 @@ static esp_err_t usb_send_packet_impl(const usb_packet_config_t *config) {
                                                   1);  // Just 1 retry
         
         if (ep0_result == ESP_OK) {
-            ESP_LOGI(TAG, "EP0 DATA IN succeeded (unexpected but OK), received %zu bytes:", dummy_received);
+            ESP_LOGI(TAG, "EP0 DATA IN succeeded, received %zu bytes:", dummy_received);
             if (dummy_received > 0) {
                 ESP_LOG_BUFFER_HEX_LEVEL(TAG, dummy_buffer, dummy_received > 16 ? 16 : dummy_received, ESP_LOG_INFO);
             }
         } else {
-            ESP_LOGI(TAG, "EP0 DATA IN failed as expected (this triggers the register write!)");
+            ESP_LOGI(TAG, "EP0 DATA IN failed/NAK'd (expected for redirect mode)");
         }
         
-        // Short delay for hardware to process the register write.
+        // Short delay for device to process
         vTaskDelay(pdMS_TO_TICKS(20));
         
         // Now read from the target endpoint (e.g., EP10) - single attempt only
         ESP_LOGI(TAG, "Now reading from EP%d (single attempt)...", config->data_stage_ep);
         
-        // Use endpoint_in to read from the specified endpoint
+        // Read from the specified endpoint
         size_t ep_read_len = config->response_buffer_size > 0 ? config->response_buffer_size : 64;
         if (ep_read_len > 64) {
-            ep_read_len = 64; // Match fake BDT CNT=0x40 to avoid oversized IN
+            ep_read_len = 64; // Limit to max packet size
         }
         usb_endpoint_params_t ep_params = {
             .endpoint = config->data_stage_ep,
@@ -956,7 +961,7 @@ esp_err_t usb_write_data(const uint8_t *data, size_t length, uint32_t timeout_ms
 esp_err_t usb_read_response(uint8_t *buffer, size_t max_len, 
                             uint32_t timeout_ms, size_t *bytes_read,
                             int max_nak_retries) {
-    ESP_LOGI(TAG, "Waiting for device response (timeout: %ldms)", timeout_ms);
+    ESP_LOGI(TAG, "Waiting for device response (timeout: %"PRIu32"ms)", timeout_ms);
     
     const int chan_num = 0;
     volatile usb_dwc_host_chan_regs_t *chan_regs = &hal_context.dev->host_chans[chan_num];
@@ -1271,15 +1276,15 @@ static esp_err_t usb_endpoint_in_impl(const usb_endpoint_params_t *params) {
     static uint8_t ep_rx_buffer[256] __attribute__((aligned(4)));
     size_t rx_len = (params->length > sizeof(ep_rx_buffer)) ? sizeof(ep_rx_buffer) : params->length;
     memset(ep_rx_buffer, 0, sizeof(ep_rx_buffer));
-    ESP_LOGI(TAG, "EP%d IN: Reading up to %zu bytes (addr=%d, timeout=%ldms)",
+    ESP_LOGI(TAG, "EP%d IN: Reading up to %zu bytes (addr=%d, timeout=%"PRIu32"ms)",
              params->endpoint, rx_len, params->device_addr, params->timeout_ms);
 
     // Configure transfer size
     usb_dwc_ll_hctsiz_init(chan_regs);
     chan_regs->hctsiz_reg.xfersize = rx_len;
     chan_regs->hctsiz_reg.pktcnt = (rx_len + 63) / 64;
-    // Single attempt: use DATA1 to match STAT=0xC8 in the fake BDT entry
-    usb_dwc_ll_hctsiz_set_pid(chan_regs, 1);
+    // Use DATA0 for initial bulk/interrupt IN (standard USB start)
+    usb_dwc_ll_hctsiz_set_pid(chan_regs, 0);
 
     // Set DMA address
     chan_regs->hcdma_reg.dmaaddr = (uint32_t)ep_rx_buffer;

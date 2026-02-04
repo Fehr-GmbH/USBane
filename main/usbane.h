@@ -4,8 +4,8 @@
  * Direct DWC2 USB controller access for security research
  */
 
-#ifndef USB_MALFORMED_H
-#define USB_MALFORMED_H
+#ifndef USBANE_H
+#define USBANE_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -100,7 +100,7 @@ esp_err_t usb_handler_start(void);
  * 
  * @return ESP_OK on success
  */
-esp_err_t usb_malformed_init(void);
+esp_err_t usbane_init(void);
 
 /**
  * @brief Clear cached device info (call after disconnect)
@@ -171,6 +171,20 @@ esp_err_t usb_endpoint_in(uint8_t endpoint, uint8_t device_addr, usb_endpoint_ty
                           uint8_t channel, uint8_t *buffer, size_t max_len,
                           uint32_t timeout_ms, size_t *bytes_read);
 
+/**
+ * @brief Continuous Bulk/Interrupt IN transfer with retry
+ * 
+ * @param endpoint Endpoint number (1-15)
+ * @param device_addr Device address
+ * @param ep_type Endpoint type (bulk or interrupt)
+ * @param channel USB host channel to use
+ * @param buffer Buffer to store received data
+ * @param max_len Maximum bytes to read
+ * @param max_attempts Maximum retry attempts (use UINT32_MAX for infinite)
+ * @param attempt_timeout_ms Timeout per attempt in milliseconds
+ * @param bytes_read Output: actual bytes received
+ * @return ESP_OK if data received, ESP_ERR_TIMEOUT if all attempts failed
+ */
 esp_err_t usb_endpoint_in_continuous(uint8_t endpoint, uint8_t device_addr, usb_endpoint_type_t ep_type,
                                     uint8_t channel, uint8_t *buffer, size_t max_len,
                                     uint32_t max_attempts, uint32_t attempt_timeout_ms, size_t *bytes_read);
@@ -203,7 +217,7 @@ bool usb_is_device_connected(void);
  * 
  * @return ESP_OK if connected, ESP_FAIL otherwise
  */
-esp_err_t usb_malformed_get_conn_status(void);
+esp_err_t usbane_get_conn_status(void);
 
 /**
  * @brief Get connected USB device information
@@ -235,4 +249,4 @@ usb_packet_config_t usb_packet_config_default(void);
 }
 #endif
 
-#endif // USB_MALFORMED_H
+#endif // USBANE_H

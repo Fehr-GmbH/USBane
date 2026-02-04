@@ -15,104 +15,25 @@
     }
   ],
   "paths": {
-    "/api/send_request": {
+    "/api/single_request": {
       "post": {
-        "summary": "Send USB Control Request",
-        "description": "Executes a USB control transfer request with specified parameters",
+        "summary": "Single USB Transfer",
+        "description": "Executes a single USB transfer (control, bulk, or interrupt). Runs on Core 1 via unified executor.",
         "tags": ["USB Operations"],
         "parameters": [
           {
-            "name": "bmRequestType",
+            "name": "type",
             "in": "query",
-            "description": "Request type and direction bitmap (e.g., 0x80 for Device-to-Host)",
+            "description": "Transfer type",
             "required": false,
             "schema": {
               "type": "string",
-              "default": "0x80"
+              "enum": ["control", "bulk_in", "bulk_out", "interrupt_in", "interrupt_out"],
+              "default": "control"
             }
           },
           {
-            "name": "bRequest",
-            "in": "query",
-            "description": "Specific request number (e.g., 0x06 for GET_DESCRIPTOR)",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "0x06"
-            }
-          },
-          {
-            "name": "wValue",
-            "in": "query",
-            "description": "Word-sized parameter (e.g., descriptor type and index)",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "0x0100"
-            }
-          },
-          {
-            "name": "wIndex",
-            "in": "query",
-            "description": "Word-sized parameter (e.g., interface or language ID)",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "0x0000"
-            }
-          },
-          {
-            "name": "wLength",
-            "in": "query",
-            "description": "Number of bytes to transfer in data phase",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 18
-            }
-          },
-          {
-            "name": "packetSize",
-            "in": "query",
-            "description": "Maximum packet size for endpoint 0",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 8
-            }
-          },
-          {
-            "name": "maxRetries",
-            "in": "query",
-            "description": "Maximum number of NAK retries (-1 for default)",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": -1
-            }
-          },
-          {
-            "name": "dataBytes",
-            "in": "query",
-            "description": "Hex string of data bytes for OUT transfer (e.g., DEADBEEF)",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "dataMode",
-            "in": "query",
-            "description": "Data transfer mode: 'separate' (DATA OUT stage) or 'append' (appended to SETUP)",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "enum": ["separate", "append"],
-              "default": "separate"
-            }
-          },
-          {
-            "name": "deviceAddr",
+            "name": "addr",
             "in": "query",
             "description": "USB device address (0 during enumeration, 1-127 after SET_ADDRESS)",
             "required": false,
@@ -124,21 +45,90 @@
             }
           },
           {
-            "name": "dataStageEp",
+            "name": "timeout",
             "in": "query",
-            "description": "Redirect DATA IN stage to different endpoint (0=normal EP0, 1-15=redirect to that EP).",
+            "description": "Timeout in milliseconds (10-30000)",
             "required": false,
             "schema": {
               "type": "integer",
-              "default": 0,
-              "minimum": 0,
-              "maximum": 15
+              "default": 1000,
+              "minimum": 10,
+              "maximum": 30000
+            }
+          },
+          {
+            "name": "data",
+            "in": "query",
+            "description": "Hex data bytes for OUT transfers (e.g., DEADBEEF)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "bmRequestType",
+            "in": "query",
+            "description": "[Control] Request type bitmap (0x80=Device-to-Host)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "0x80"
+            }
+          },
+          {
+            "name": "bRequest",
+            "in": "query",
+            "description": "[Control] Request number (0x06=GET_DESCRIPTOR)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "0x06"
+            }
+          },
+          {
+            "name": "wValue",
+            "in": "query",
+            "description": "[Control] Word-sized parameter",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "0x0100"
+            }
+          },
+          {
+            "name": "wIndex",
+            "in": "query",
+            "description": "[Control] Word-sized parameter",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "0x0000"
+            }
+          },
+          {
+            "name": "wLength",
+            "in": "query",
+            "description": "[Control] Data phase length",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 18
+            }
+          },
+          {
+            "name": "packetSize",
+            "in": "query",
+            "description": "[Control] Endpoint 0 max packet size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 8
             }
           },
           {
             "name": "setupOnly",
             "in": "query",
-            "description": "If true (1), return immediately after SETUP ACK without DATA/STATUS phases.",
+            "description": "[Control] Return after SETUP ACK only",
             "required": false,
             "schema": {
               "type": "integer",
@@ -147,19 +137,62 @@
             }
           },
           {
-            "name": "timeout",
+            "name": "ep",
             "in": "query",
-            "description": "Timeout for response in milliseconds",
+            "description": "[Bulk/Interrupt] Endpoint number (1-15)",
             "required": false,
             "schema": {
               "type": "integer",
-              "default": 100
+              "default": 1,
+              "minimum": 1,
+              "maximum": 15
+            }
+          },
+          {
+            "name": "len",
+            "in": "query",
+            "description": "[Bulk/Interrupt IN] Maximum bytes to read",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 64
+            }
+          },
+          {
+            "name": "channel",
+            "in": "query",
+            "description": "[Bulk/Interrupt] USB host channel (1-15)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "continuous",
+            "in": "query",
+            "description": "[Bulk/Interrupt IN] Enable polling mode",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "enum": [0, 1],
+              "default": 0
+            }
+          },
+          {
+            "name": "max_attempts",
+            "in": "query",
+            "description": "[Bulk/Interrupt IN] Max polling attempts",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 10
             }
           }
         ],
         "responses": {
           "200": {
-            "description": "Request executed successfully",
+            "description": "Request executed",
             "content": {
               "application/json": {
                 "schema": {
@@ -167,17 +200,17 @@
                   "properties": {
                     "status": {
                       "type": "string",
-                      "example": "success"
+                      "enum": ["success", "failed"]
                     },
-                    "rxBytes": {
+                    "bytes_received": {
                       "type": "integer",
                       "description": "Number of bytes received"
                     },
-                    "dataHex": {
+                    "data": {
                       "type": "string",
                       "description": "Received data in hex format"
                     },
-                    "dataAscii": {
+                    "ascii": {
                       "type": "string",
                       "description": "Received data in ASCII format"
                     }
@@ -186,8 +219,8 @@
               }
             }
           },
-          "500": {
-            "description": "Request failed",
+          "503": {
+            "description": "Executor busy",
             "content": {
               "application/json": {
                 "schema": {
@@ -197,10 +230,195 @@
                       "type": "string",
                       "example": "error"
                     },
-                    "error": {
+                    "message": {
                       "type": "string",
-                      "description": "Error message"
+                      "example": "Executor busy"
                     }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Execution timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "error"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "Execution timeout"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chain": {
+      "post": {
+        "summary": "Execute USB Chain",
+        "description": "Executes a chain of USB operations from CSV format. Runs on Core 1 via unified executor.",
+        "tags": ["Chain Execution"],
+        "requestBody": {
+          "description": "CSV-formatted chain commands",
+          "required": true,
+          "content": {
+            "text/csv": {
+              "schema": {
+                "type": "string",
+                "example": "control,0x80,0x06,0x0100,0x0000,18,8\nwaitfor,delay,100\ncontrol,0x80,0x06,0x0200,0x0000,255,8"
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Chain executed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": ["success", "failed"]
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Total number of commands executed"
+                    },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "index": {
+                            "type": "integer"
+                          },
+                          "status": {
+                            "type": "string"
+                          },
+                          "bytes": {
+                            "type": "integer"
+                          },
+                          "data": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Executor busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "error"
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "Executor busy"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/bruteforce": {
+      "post": {
+        "summary": "Execute Bruteforce Attack",
+        "description": "Iterates over ranges of USB control request parameters. Runs on Core 1 via unified executor. Uses same CSV format as UI export.",
+        "tags": ["USB Operations"],
+        "requestBody": {
+          "description": "Bruteforce configuration in CSV format (same as UI export)",
+          "required": true,
+          "content": {
+            "text/csv": {
+              "schema": {
+                "type": "string",
+                "example": "field,iterate,start,end,exclude\nbmRequestType,1,0x00,0xFF,\"\"\nbRequest,1,0x00,0xFF,\"\"\nwValueHi,0,0x01,0x01,\"\"\nwValueLo,0,0x00,0x00,\"\"\nwIndexHi,0,0x00,0x00,\"\"\nwIndexLo,0,0x00,0x00,\"\"\nwLength,0,18,18,\"\"\npacketSize,0,8,8,\"\"\ndataMode,separate,,,\ndataBytes,\"\",,,\ndelay,50,,,"
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bruteforce completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": ["success", "failed", "stopped"]
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Total iterations executed"
+                    },
+                    "hits": {
+                      "type": "integer",
+                      "description": "Number of successful responses"
+                    },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "bmRequestType": { "type": "integer" },
+                          "bRequest": { "type": "integer" },
+                          "wValue": { "type": "integer" },
+                          "wIndex": { "type": "integer" },
+                          "status": { "type": "string" },
+                          "bytes": { "type": "integer" },
+                          "data": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Executor busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "error" },
+                    "message": { "type": "string", "example": "Executor busy" }
                   }
                 }
               }
@@ -753,218 +971,6 @@
         }
       }
     },
-    "/api/endpoint_in": {
-      "get": {
-        "summary": "Bulk/Interrupt IN Transfer",
-        "description": "Read data from a bulk or interrupt endpoint (EP1-15)",
-        "tags": ["USB Operations"],
-        "parameters": [
-          {
-            "name": "ep",
-            "in": "query",
-            "description": "Endpoint number (1-15)",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 15
-            }
-          },
-          {
-            "name": "addr",
-            "in": "query",
-            "description": "USB device address",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 0
-            }
-          },
-          {
-            "name": "len",
-            "in": "query",
-            "description": "Maximum bytes to read",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 64
-            }
-          },
-          {
-            "name": "timeout",
-            "in": "query",
-            "description": "Timeout in milliseconds",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 1000
-            }
-          },
-          {
-            "name": "type",
-            "in": "query",
-            "description": "Transfer type",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "enum": ["bulk", "interrupt"],
-              "default": "bulk"
-            }
-          },
-          {
-            "name": "channel",
-            "in": "query",
-            "description": "USB host channel (0-15)",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 1
-            }
-          },
-          {
-            "name": "continuous",
-            "in": "query",
-            "description": "Enable polling mode (1=enabled)",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "enum": [0, 1],
-              "default": 0
-            }
-          },
-          {
-            "name": "max_attempts",
-            "in": "query",
-            "description": "Max attempts for continuous mode",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 10
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Transfer result",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "status": {
-                      "type": "string",
-                      "example": "success"
-                    },
-                    "bytes_received": {
-                      "type": "integer"
-                    },
-                    "data": {
-                      "type": "string",
-                      "description": "Received data in hex"
-                    },
-                    "ascii": {
-                      "type": "string",
-                      "description": "Received data as ASCII"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/endpoint_out": {
-      "post": {
-        "summary": "Bulk/Interrupt OUT Transfer",
-        "description": "Write data to a bulk or interrupt endpoint (EP1-15)",
-        "tags": ["USB Operations"],
-        "parameters": [
-          {
-            "name": "ep",
-            "in": "query",
-            "description": "Endpoint number (1-15)",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 15
-            }
-          },
-          {
-            "name": "addr",
-            "in": "query",
-            "description": "USB device address",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 0
-            }
-          },
-          {
-            "name": "data",
-            "in": "query",
-            "description": "Hex data to send (e.g., DEADBEEF)",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "timeout",
-            "in": "query",
-            "description": "Timeout in milliseconds",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 1000
-            }
-          },
-          {
-            "name": "type",
-            "in": "query",
-            "description": "Transfer type",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "enum": ["bulk", "interrupt"],
-              "default": "bulk"
-            }
-          },
-          {
-            "name": "channel",
-            "in": "query",
-            "description": "USB host channel (0-15)",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 1
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Transfer result",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "status": {
-                      "type": "string",
-                      "example": "success"
-                    },
-                    "bytes_sent": {
-                      "type": "integer"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
   },
   "tags": [
     {
