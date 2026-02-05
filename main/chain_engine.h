@@ -24,6 +24,8 @@ typedef enum {
     CHAIN_TYPE_BULK_OUT,         // Bulk OUT (EP1-15)
     CHAIN_TYPE_INTERRUPT_IN,     // Interrupt IN (EP1-15)
     CHAIN_TYPE_INTERRUPT_OUT,    // Interrupt OUT (EP1-15)
+    CHAIN_TYPE_ISO_IN,           // Isochronous IN (EP1-15)
+    CHAIN_TYPE_ISO_OUT,          // Isochronous OUT (EP1-15)
     CHAIN_TYPE_WAIT_DELAY,       // Wait: fixed delay
     CHAIN_TYPE_WAIT_GPIO,        // Wait: GPIO pin state
     CHAIN_TYPE_WAIT_USB_RESET,   // Wait: USB reset
@@ -34,6 +36,7 @@ typedef enum {
     CHAIN_TYPE_ACTION_COMMENT,   // Action: comment (no-op, for logging)
     CHAIN_TYPE_ACTION_GPIO_OUT,  // Action: set GPIO output level
     CHAIN_TYPE_ACTION_HTTP,      // Action: HTTP request
+    CHAIN_TYPE_ACTION_CONFIG,    // Action: config toggle (auto-recovery, etc.)
     CHAIN_TYPE_CONDITION,        // Conditional: compare and branch
 } chain_entry_type_t;
 
@@ -140,6 +143,12 @@ typedef struct __attribute__((packed)) {
             char url[64];             // URL to request
             uint8_t method;           // 0=GET, 1=POST
         } http;
+
+        // Config action
+        struct {
+            char key[16];
+            char value[16];
+        } config;
         
         // Condition
         struct {

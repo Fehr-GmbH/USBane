@@ -164,7 +164,8 @@ esp_err_t usb_read_response(uint8_t *buffer, size_t max_len,
  */
 typedef enum {
     USB_EP_TYPE_BULK = 0,
-    USB_EP_TYPE_INTERRUPT = 1
+    USB_EP_TYPE_INTERRUPT = 1,
+    USB_EP_TYPE_ISOCHRONOUS = 2
 } usb_endpoint_type_t;
 
 esp_err_t usb_endpoint_in(uint8_t endpoint, uint8_t device_addr, usb_endpoint_type_t ep_type,
@@ -204,6 +205,10 @@ esp_err_t usb_endpoint_in_continuous(uint8_t endpoint, uint8_t device_addr, usb_
 esp_err_t usb_endpoint_out(uint8_t endpoint, uint8_t device_addr, usb_endpoint_type_t ep_type,
                            uint8_t channel, const uint8_t *data, size_t length,
                            uint32_t timeout_ms);
+
+// Auto-recovery control (useful for exploit chains where resets break state)
+void usb_set_auto_recovery_enabled(bool enabled);
+bool usb_is_auto_recovery_enabled(void);
 
 /**
  * @brief Check if USB device is still connected

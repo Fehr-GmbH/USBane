@@ -36,6 +36,7 @@ static usb_device_info_t cached_device_info = {0};
 
 // Consecutive failure counter for auto-recovery
 static int consecutive_failures = 0;
+static bool auto_recovery_enabled = true;
 static int recovery_attempts = 0;
 #define MAX_CONSECUTIVE_FAILURES 5  // Reset USB after this many failures
 #define MAX_RECOVERY_ATTEMPTS 3     // Power cycle after this many failed resets
@@ -465,6 +466,17 @@ esp_err_t usb_endpoint_out(uint8_t endpoint, uint8_t device_addr, usb_endpoint_t
     };
     params.channel = channel;  // Set the channel
     return usb_execute_on_core1(USB_OP_ENDPOINT_OUT, &params, NULL, timeout_ms + 500);
+}
+
+void usb_set_auto_recovery_enabled(bool enabled) {
+    auto_recovery_enabled = enabled;
+    if (!enabled) {
+        ESP_LOGW(TAG, "Auto-recovery disabled (exploit mode)");
+    }
+}
+
+bool usb_is_auto_recovery_enabled(void) {
+    return auto_recovery_enabled;
 }
 
 // ============================================================================
@@ -1055,6 +1067,11 @@ esp_err_t usb_read_response(uint8_t *buffer, size_t max_len,
     
     // Auto-recovery: Full controller reset after too many consecutive failures
     if (consecutive_failures >= MAX_CONSECUTIVE_FAILURES) {
+        if (!auto_recovery_enabled) {
+            ESP_LOGW(TAG, "Auto-recovery skipped (disabled) after %d failures", consecutive_failures);
+            consecutive_failures = 0;
+            return ESP_ERR_TIMEOUT;
+        }
         recovery_attempts++;
         
         if (recovery_attempts >= MAX_RECOVERY_ATTEMPTS) {
@@ -1261,16 +1278,36 @@ static esp_err_t usb_endpoint_in_impl(const usb_endpoint_params_t *params) {
     usb_dwc_ll_hcint_read_and_clear_intrs(chan_regs);
     usb_dwc_ll_grstctl_flush_rx_fifo(hal_context.dev);
 
-    usb_dwc_xfer_type_t xfer_type = (params->ep_type == USB_EP_TYPE_INTERRUPT)
-                                        ? USB_DWC_XFER_TYPE_INTR
-                                        : USB_DWC_XFER_TYPE_BULK;
+    usb_dwc_xfer_type_t xfer_type = USB_DWC_XFER_TYPE_BULK;
+    if (params->ep_type == USB_EP_TYPE_INTERRUPT) {
+        xfer_type = USB_DWC_XFER_TYPE_INTR;
+    } else if (params->ep_type == USB_EP_TYPE_ISOCHRONOUS) {
+        xfer_type = USB_DWC_XFER_TYPE_ISOCHRONOUS;
+    }
 
-    // Configure channel for bulk/interrupt IN
+    // Configure channel for bulk/interrupt/iso IN
     usb_dwc_ll_hcchar_set_ep_num(chan_regs, params->endpoint);
     usb_dwc_ll_hcchar_set_dev_addr(chan_regs, params->device_addr);
     usb_dwc_ll_hcchar_set_ep_type(chan_regs, xfer_type);
     usb_dwc_ll_hcchar_set_mps(chan_regs, 64);
     usb_dwc_ll_hcchar_set_dir(chan_regs, 1);  // IN direction
+    if (params->ep_type == USB_EP_TYPE_ISOCHRONOUS) {
+        // Schedule for the next frame to avoid missing the current frame window
+        uint32_t frame_num = usb_dwc_ll_hfnum_get_frame_num(hal_context.dev) + 1;
+        if (frame_num & 0x1) {
+            usb_dwc_ll_hcchar_set_odd_frame(chan_regs);
+        } else {
+            usb_dwc_ll_hcchar_set_even_frame(chan_regs);
+        }
+    }
+    
+    // Debug: Log channel config for troubleshooting
+    const char *xfer_name = (xfer_type == USB_DWC_XFER_TYPE_ISOCHRONOUS) ? "ISO" :
+                            (xfer_type == USB_DWC_XFER_TYPE_INTR) ? "INTR" :
+                            (xfer_type == USB_DWC_XFER_TYPE_BULK) ? "BULK" : "CTRL";
+    ESP_LOGI(TAG, "EP%d IN: Channel config - hcchar=0x%08lx, ep=%d, addr=%d, type=%s", 
+             params->endpoint, chan_regs->hcchar_reg.val, 
+             params->endpoint, params->device_addr, xfer_name);
 
     // Prepare DMA buffer
     static uint8_t ep_rx_buffer[256] __attribute__((aligned(4)));
@@ -1285,6 +1322,9 @@ static esp_err_t usb_endpoint_in_impl(const usb_endpoint_params_t *params) {
     chan_regs->hctsiz_reg.pktcnt = (rx_len + 63) / 64;
     // Use DATA0 for initial bulk/interrupt IN (standard USB start)
     usb_dwc_ll_hctsiz_set_pid(chan_regs, 0);
+    if (params->ep_type == USB_EP_TYPE_ISOCHRONOUS) {
+        usb_dwc_ll_hctsiz_set_sched_info(chan_regs, 1, 0);
+    }
 
     // Set DMA address
     chan_regs->hcdma_reg.dmaaddr = (uint32_t)ep_rx_buffer;
@@ -1382,9 +1422,12 @@ static esp_err_t usb_endpoint_out_impl(const usb_endpoint_params_t *params) {
     // Clear interrupts
     usb_dwc_ll_hcint_read_and_clear_intrs(chan_regs);
     
-    usb_dwc_xfer_type_t xfer_type = (params->ep_type == USB_EP_TYPE_INTERRUPT)
-                                        ? USB_DWC_XFER_TYPE_INTR
-                                        : USB_DWC_XFER_TYPE_BULK;
+    usb_dwc_xfer_type_t xfer_type = USB_DWC_XFER_TYPE_BULK;
+    if (params->ep_type == USB_EP_TYPE_INTERRUPT) {
+        xfer_type = USB_DWC_XFER_TYPE_INTR;
+    } else if (params->ep_type == USB_EP_TYPE_ISOCHRONOUS) {
+        xfer_type = USB_DWC_XFER_TYPE_ISOCHRONOUS;
+    }
 
     // Configure channel for bulk/interrupt OUT
     usb_dwc_ll_hcchar_set_ep_num(chan_regs, params->endpoint);

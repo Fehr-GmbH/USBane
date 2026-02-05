@@ -167,9 +167,15 @@ static esp_err_t parse_csv_line_to_entry(char *line, chain_entry_t *entry) {
         return ESP_OK;
     }
     
-    // Bulk/Interrupt IN
-    if ((strcmp(type, "bulk_in") == 0 || strcmp(type, "interrupt_in") == 0) && field_count >= 2) {
-        entry->type = (strcmp(type, "bulk_in") == 0) ? CHAIN_TYPE_BULK_IN : CHAIN_TYPE_INTERRUPT_IN;
+    // Bulk/Interrupt/Isochronous IN
+    if ((strcmp(type, "bulk_in") == 0 || strcmp(type, "interrupt_in") == 0 || strcmp(type, "iso_in") == 0) && field_count >= 2) {
+        if (strcmp(type, "interrupt_in") == 0) {
+            entry->type = CHAIN_TYPE_INTERRUPT_IN;
+        } else if (strcmp(type, "iso_in") == 0) {
+            entry->type = CHAIN_TYPE_ISO_IN;
+        } else {
+            entry->type = CHAIN_TYPE_BULK_IN;
+        }
         entry->ep.endpoint = (uint8_t)parse_hex_or_dec(fields[1]);
         entry->ep.length = (field_count > 2) ? (uint16_t)parse_hex_or_dec(fields[2]) : 64;
         entry->ep.deviceAddr = (field_count > 3) ? (uint8_t)parse_hex_or_dec(fields[3]) : 0;
@@ -179,10 +185,16 @@ static esp_err_t parse_csv_line_to_entry(char *line, chain_entry_t *entry) {
         return ESP_OK;
     }
     
-    // Bulk/Interrupt OUT
+    // Bulk/Interrupt/Isochronous OUT
     // Format: bulk_out,endpoint,data,deviceAddr,timeout
-    if ((strcmp(type, "bulk_out") == 0 || strcmp(type, "interrupt_out") == 0) && field_count >= 3) {
-        entry->type = (strcmp(type, "bulk_out") == 0) ? CHAIN_TYPE_BULK_OUT : CHAIN_TYPE_INTERRUPT_OUT;
+    if ((strcmp(type, "bulk_out") == 0 || strcmp(type, "interrupt_out") == 0 || strcmp(type, "iso_out") == 0) && field_count >= 3) {
+        if (strcmp(type, "interrupt_out") == 0) {
+            entry->type = CHAIN_TYPE_INTERRUPT_OUT;
+        } else if (strcmp(type, "iso_out") == 0) {
+            entry->type = CHAIN_TYPE_ISO_OUT;
+        } else {
+            entry->type = CHAIN_TYPE_BULK_OUT;
+        }
         entry->ep.endpoint = (uint8_t)parse_hex_or_dec(fields[1]);
         // Data is in field 2 (hex string)
         if (fields[2] && *fields[2]) {
@@ -279,6 +291,12 @@ static esp_err_t parse_csv_line_to_entry(char *line, chain_entry_t *entry) {
             if (field_count > 3 && strcasecmp(fields[3], "post") == 0) {
                 entry->http.method = 1;
             }
+            return ESP_OK;
+        }
+        if (strcmp(action_type, "config") == 0 && field_count >= 4) {
+            entry->type = CHAIN_TYPE_ACTION_CONFIG;
+            strncpy(entry->config.key, fields[2], sizeof(entry->config.key) - 1);
+            strncpy(entry->config.value, fields[3], sizeof(entry->config.value) - 1);
             return ESP_OK;
         }
         return ESP_ERR_NOT_SUPPORTED;
@@ -403,7 +421,7 @@ static esp_err_t execute_copy(const chain_entry_t *entry, chain_entry_t *chain, 
             case 2: target->ctrl.wLength = (uint16_t)value; break;
             case 4: target->ctrl.deviceAddr = (uint8_t)value; break;
         }
-    } else if (target->type == CHAIN_TYPE_BULK_IN || target->type == CHAIN_TYPE_INTERRUPT_IN) {
+    } else if (target->type == CHAIN_TYPE_BULK_IN || target->type == CHAIN_TYPE_INTERRUPT_IN || target->type == CHAIN_TYPE_ISO_IN) {
         switch (entry->copy.toField) {
             case 2: target->ep.length = (uint16_t)value; break;
             case 4: target->ep.deviceAddr = (uint8_t)value; break;
@@ -419,6 +437,14 @@ static esp_err_t execute_entry(chain_entry_t *entry, chain_result_t *result) {
     
     switch (entry->type) {
         case CHAIN_TYPE_CONTROL: {
+            // Populate result metadata for UI display
+            result->bmRequestType = entry->ctrl.bmRequestType;
+            result->bRequest = entry->ctrl.bRequest;
+            result->wValue = entry->ctrl.wValue;
+            result->wIndex = entry->ctrl.wIndex;
+            result->wLength = entry->ctrl.wLength;
+            result->packetSize = entry->ctrl.packetSize ? entry->ctrl.packetSize : 8;
+
             usb_packet_config_t config = usb_packet_config_default();
             config.bmRequestType = entry->ctrl.bmRequestType;
             config.bRequest = entry->ctrl.bRequest;
@@ -454,8 +480,14 @@ static esp_err_t execute_entry(chain_entry_t *entry, chain_result_t *result) {
         }
         
         case CHAIN_TYPE_BULK_IN:
-        case CHAIN_TYPE_INTERRUPT_IN: {
-            usb_endpoint_type_t ep_type = (entry->type == CHAIN_TYPE_INTERRUPT_IN) ? USB_EP_TYPE_INTERRUPT : USB_EP_TYPE_BULK;
+        case CHAIN_TYPE_INTERRUPT_IN:
+        case CHAIN_TYPE_ISO_IN: {
+            usb_endpoint_type_t ep_type = USB_EP_TYPE_BULK;
+            if (entry->type == CHAIN_TYPE_INTERRUPT_IN) {
+                ep_type = USB_EP_TYPE_INTERRUPT;
+            } else if (entry->type == CHAIN_TYPE_ISO_IN) {
+                ep_type = USB_EP_TYPE_ISOCHRONOUS;
+            }
             size_t bytes_read = 0;
             size_t len = entry->ep.length ? entry->ep.length : 64;
             uint32_t timeout = entry->ep.timeout ? entry->ep.timeout : 1000;
@@ -478,8 +510,14 @@ static esp_err_t execute_entry(chain_entry_t *entry, chain_result_t *result) {
         }
         
         case CHAIN_TYPE_BULK_OUT:
-        case CHAIN_TYPE_INTERRUPT_OUT: {
-            usb_endpoint_type_t ep_type = (entry->type == CHAIN_TYPE_INTERRUPT_OUT) ? USB_EP_TYPE_INTERRUPT : USB_EP_TYPE_BULK;
+        case CHAIN_TYPE_INTERRUPT_OUT:
+        case CHAIN_TYPE_ISO_OUT: {
+            usb_endpoint_type_t ep_type = USB_EP_TYPE_BULK;
+            if (entry->type == CHAIN_TYPE_INTERRUPT_OUT) {
+                ep_type = USB_EP_TYPE_INTERRUPT;
+            } else if (entry->type == CHAIN_TYPE_ISO_OUT) {
+                ep_type = USB_EP_TYPE_ISOCHRONOUS;
+            }
             uint32_t timeout = entry->ep.timeout ? entry->ep.timeout : 1000;
             
             esp_err_t ret = usb_endpoint_out(
@@ -687,6 +725,28 @@ esp_err_t chain_execute_csv(const char *csv_data, size_t csv_len,
         ESP_LOGE(TAG, "No valid entries");
         return ESP_ERR_INVALID_ARG;
     }
+
+    // Disable auto-recovery for chains with oversized control packets (exploit mode)
+    bool restore_auto_recovery = false;
+    bool has_config_override = false;
+    for (int i = 0; i < entry_count; i++) {
+        if (entries[i].type == CHAIN_TYPE_ACTION_CONFIG) {
+            if (strcasecmp(entries[i].config.key, "auto_recovery") == 0 ||
+                strcasecmp(entries[i].config.key, "reset_on_retry") == 0) {
+                has_config_override = true;
+                break;
+            }
+        }
+    }
+    if (!has_config_override && usb_is_auto_recovery_enabled()) {
+        for (int i = 0; i < entry_count; i++) {
+            if (entries[i].type == CHAIN_TYPE_CONTROL && entries[i].ctrl.packetSize > 8) {
+                usb_set_auto_recovery_enabled(false);
+                restore_auto_recovery = true;
+                break;
+            }
+        }
+    }
     
     ESP_LOGI(TAG, "Executing %d entries", entry_count);
     
@@ -717,6 +777,28 @@ esp_err_t chain_execute_csv(const char *csv_data, size_t csv_len,
         
         if (entry->type == CHAIN_TYPE_ACTION_GOTO) {
             i = entry->jump.targetIndex;
+            continue;
+        }
+
+        if (entry->type == CHAIN_TYPE_ACTION_CONFIG) {
+            const char *key = entry->config.key;
+            const char *value = entry->config.value;
+            if (strcasecmp(key, "auto_recovery") == 0 || strcasecmp(key, "reset_on_retry") == 0) {
+                bool enable = true;
+                if (strcasecmp(value, "0") == 0 || strcasecmp(value, "false") == 0 || strcasecmp(value, "off") == 0) {
+                    enable = false;
+                }
+                usb_set_auto_recovery_enabled(enable);
+            } else {
+                ESP_LOGW(TAG, "Unknown config action: %s=%s", key, value);
+            }
+            if (result_cb) {
+                memset(&result, 0, sizeof(result));
+                result.type = CHAIN_TYPE_ACTION_CONFIG;
+                result.status = 0;
+                result_cb(i, &result, user_data);
+            }
+            i++;
             continue;
         }
         
@@ -761,6 +843,9 @@ esp_err_t chain_execute_csv(const char *csv_data, size_t csv_len,
     }
     
     chain_running = false;
+    if (restore_auto_recovery) {
+        usb_set_auto_recovery_enabled(true);
+    }
     free(entries);
     
     ESP_LOGI(TAG, "Chain complete (%d executed)", executed_count);

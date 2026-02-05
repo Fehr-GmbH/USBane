@@ -399,7 +399,7 @@ let chainWs = null;  // WebSocket for native chain execution
 
 function addToChain() {
     const req = {
-        type: 'control',  // Action type: control, bulk_in, bulk_out, interrupt_in, interrupt_out, waitfor, action, condition
+        type: 'control',  // Action type: control, bulk_in, bulk_out, interrupt_in, interrupt_out, iso_in, iso_out, waitfor, action, condition
         bmRequestType: document.getElementById('bmRequestType').value,
         bRequest: document.getElementById('bRequest').value,
         wValue: document.getElementById('wValue').value,
@@ -551,11 +551,29 @@ function selectChainEpType(type) {
     document.getElementById('chain_ep_type').value = type;
     const bulkBtn = document.getElementById('chain_ep_type_bulk');
     const intBtn = document.getElementById('chain_ep_type_int');
+    const isoBtn = document.getElementById('chain_ep_type_iso');
     
     if (type === 'bulk') {
         bulkBtn.style.background = '#17a2b8';
         bulkBtn.style.color = '#fff';
         bulkBtn.style.fontWeight = 'bold';
+        intBtn.style.background = '#333';
+        intBtn.style.color = '#888';
+        intBtn.style.fontWeight = 'normal';
+        if (isoBtn) {
+            isoBtn.style.background = '#333';
+            isoBtn.style.color = '#888';
+            isoBtn.style.fontWeight = 'normal';
+        }
+    } else if (type === 'iso') {
+        if (isoBtn) {
+            isoBtn.style.background = '#17a2b8';
+            isoBtn.style.color = '#fff';
+            isoBtn.style.fontWeight = 'bold';
+        }
+        bulkBtn.style.background = '#333';
+        bulkBtn.style.color = '#888';
+        bulkBtn.style.fontWeight = 'normal';
         intBtn.style.background = '#333';
         intBtn.style.color = '#888';
         intBtn.style.fontWeight = 'normal';
@@ -566,6 +584,11 @@ function selectChainEpType(type) {
         bulkBtn.style.background = '#333';
         bulkBtn.style.color = '#888';
         bulkBtn.style.fontWeight = 'normal';
+        if (isoBtn) {
+            isoBtn.style.background = '#333';
+            isoBtn.style.color = '#888';
+            isoBtn.style.fontWeight = 'normal';
+        }
     }
 }
 
@@ -595,10 +618,12 @@ function addQuickChainEndpoint() {
     const direction = document.getElementById('chain_ep_direction').value;
     const epType = document.getElementById('chain_ep_type').value;
     
-    // Determine type: bulk_in, bulk_out, interrupt_in, interrupt_out
+    // Determine type: bulk_in, bulk_out, interrupt_in, interrupt_out, iso_in, iso_out
     let reqType;
     if (epType === 'bulk') {
         reqType = direction === 'in' ? 'bulk_in' : 'bulk_out';
+    } else if (epType === 'iso') {
+        reqType = direction === 'in' ? 'iso_in' : 'iso_out';
     } else {
         reqType = direction === 'in' ? 'interrupt_in' : 'interrupt_out';
     }
@@ -1139,10 +1164,17 @@ function renderChain() {
             html += '<button onclick="removeFromChain(' + i + ')" style="padding:2px 6px;margin:1px;font-size:10px;background:#dc3545;">x</button>';
             html += '</td>';
             html += '</tr>';
-        } else if (actionType === 'bulk_in' || actionType === 'interrupt_in') {
-            // Bulk/Interrupt IN row - blue for bulk (#17a2b8), cyan for interrupt (#20c997)
-            let bgColor = actionType === 'bulk_in' ? '#17a2b8' : '#20c997';
-            let typeLabel = actionType === 'bulk_in' ? 'BULK IN' : 'INT IN';
+        } else if (actionType === 'bulk_in' || actionType === 'interrupt_in' || actionType === 'iso_in') {
+            // Bulk/Interrupt/Iso IN row
+            let bgColor = '#17a2b8';
+            let typeLabel = 'BULK IN';
+            if (actionType === 'interrupt_in') {
+                bgColor = '#20c997';
+                typeLabel = 'INT IN';
+            } else if (actionType === 'iso_in') {
+                bgColor = '#ffc107';
+                typeLabel = 'ISO IN';
+            }
             let configInfo = 'EP' + (req.endpoint || 1) + ', addr=' + (req.deviceAddr || 0) + ', len=' + (req.length || 64) + ', timeout=' + (req.timeout || 1000) + 'ms';
             if (req.continuous) configInfo += ', continuous';
             
@@ -1156,10 +1188,17 @@ function renderChain() {
             html += '<button onclick="removeFromChain(' + i + ')" style="padding:2px 6px;margin:1px;font-size:10px;background:#dc3545;">x</button>';
             html += '</td>';
             html += '</tr>';
-        } else if (actionType === 'bulk_out' || actionType === 'interrupt_out') {
-            // Bulk/Interrupt OUT row - blue for bulk (#17a2b8), cyan for interrupt (#20c997)
-            let bgColor = actionType === 'bulk_out' ? '#17a2b8' : '#20c997';
-            let typeLabel = actionType === 'bulk_out' ? 'BULK OUT' : 'INT OUT';
+        } else if (actionType === 'bulk_out' || actionType === 'interrupt_out' || actionType === 'iso_out') {
+            // Bulk/Interrupt/Iso OUT row
+            let bgColor = '#17a2b8';
+            let typeLabel = 'BULK OUT';
+            if (actionType === 'interrupt_out') {
+                bgColor = '#20c997';
+                typeLabel = 'INT OUT';
+            } else if (actionType === 'iso_out') {
+                bgColor = '#ffc107';
+                typeLabel = 'ISO OUT';
+            }
             let configInfo = 'EP' + (req.endpoint || 1) + ', addr=' + (req.deviceAddr || 0) + ', data=' + (req.dataBytes || '(none)');
             
             html += '<tr style="background:' + bgColor + '22;">';
@@ -1522,6 +1561,8 @@ function stopChain() {
 // Build CSV from current chain
 function buildChainCSV() {
     let csv = '# USBane Chain Export\n';
+    // Apply configuration tab auto-recovery setting to chain execution
+    csv += 'action,config,reset_on_retry,' + (getResetOnRetry() ? '1' : '0') + '\n';
     
     chainRequests.forEach(req => {
         const actionType = req.type || 'control';
@@ -1561,11 +1602,11 @@ function buildChainCSV() {
                    (req.aSource || 'responsehex') + ',' + (req.aReqNo ?? -1) + ',' + (req.aLength || 1) + ',"' + (req.aValue || '') + '",' +
                    (req.bSource || 'manual') + ',' + (req.bReqNo ?? -1) + ',' + (req.bLength || 1) + ',"' + (req.bValue || '') + '",' +
                    (req.condAction || 'skip') + '\n';
-        } else if (actionType === 'bulk_in' || actionType === 'interrupt_in') {
+        } else if (actionType === 'bulk_in' || actionType === 'interrupt_in' || actionType === 'iso_in') {
             csv += actionType + ',' + (req.endpoint || 1) + ',' + (req.length || 64) + ',' + 
                    (req.deviceAddr || 0) + ',' + (req.timeout || 1000) + ',' +
                    (req.continuous ? 1 : 0) + ',' + (req.maxAttempts || 1) + '\n';
-        } else if (actionType === 'bulk_out' || actionType === 'interrupt_out') {
+        } else if (actionType === 'bulk_out' || actionType === 'interrupt_out' || actionType === 'iso_out') {
             csv += actionType + ',' + (req.endpoint || 1) + ',"' + (req.dataBytes || '') + '",' +
                    (req.deviceAddr || 0) + ',' + (req.timeout || 1000) + '\n';
         } else {
@@ -1658,22 +1699,53 @@ function executeChainNative() {
             chainCurrentIndex = msg.i;
             progress.innerText = 'Step ' + (msg.i + 1) + '/' + chainRequests.length;
             
-            // Add result to table
+            // Map backend type -> action type (keeps UI aligned when CSV includes hidden config actions)
+            const chainTypeMap = {
+                0: 'control',
+                1: 'bulk_in',
+                2: 'bulk_out',
+                3: 'interrupt_in',
+                4: 'interrupt_out',
+                5: 'iso_in',
+                6: 'iso_out',
+                7: 'waitfor',
+                8: 'waitfor',
+                9: 'waitfor',
+                10: 'waitfor',
+                11: 'waitfor',
+                12: 'action',
+                13: 'action',
+                14: 'action',
+                15: 'action',
+                16: 'action',
+                17: 'config',
+                18: 'condition'
+            };
+            if (msg.t === 17) {
+                // config action inserted by UI; don't render a row
+                return;
+            }
             const req = chainRequests[msg.i] || {};
-            const actionType = req.type || 'control';
+            const actionType = chainTypeMap[msg.t] || req.type || 'control';
             
             // Determine status text
             let statusText = msg.s === 0 ? 'OK' : (msg.s === 1 ? 'TIMEOUT' : 'ERROR');
             
             // Format row based on type
             if (actionType === 'control') {
+                const bmRT = msg.bmRT !== undefined ? '0x' + msg.bmRT.toString(16).padStart(2, '0') : (req.bmRequestType || '0x00');
+                const bReq = msg.bReq !== undefined ? '0x' + msg.bReq.toString(16).padStart(2, '0') : (req.bRequest || '0x00');
+                const wVal = msg.wVal !== undefined ? '0x' + msg.wVal.toString(16).padStart(4, '0') : (req.wValue || '0x0000');
+                const wIdx = msg.wIdx !== undefined ? '0x' + msg.wIdx.toString(16).padStart(4, '0') : (req.wIndex || '0x0000');
+                const wLen = msg.wLen !== undefined ? msg.wLen : (req.wLength || 0);
+                const pkt = msg.pkt !== undefined ? msg.pkt : (req.packetSize || 8);
                 addTableRow(
-                    req.bmRequestType || '0x00',
-                    req.bRequest || '0x00',
-                    req.wValue || '0x0000',
-                    req.wIndex || '0x0000',
-                    req.wLength || 0,
-                    req.packetSize || 8,
+                    bmRT,
+                    bReq,
+                    wVal,
+                    wIdx,
+                    wLen,
+                    pkt,
                     msg.b || 0,
                     msg.d || '',
                     actionType.toUpperCase()
@@ -1772,6 +1844,7 @@ function exportChainCSV() {
     }
 
     let csv = 'type,p1,p2,p3,p4,p5,p6,p7,p8,p9,p10\n';
+    csv += 'action,config,reset_on_retry,' + (getResetOnRetry() ? '1' : '0') + '\n';
     chainRequests.forEach(req => {
         const actionType = req.type || 'control';
         if (actionType === 'waitfor') {
@@ -1810,13 +1883,13 @@ function exportChainCSV() {
             const bLength = req.valueBLength !== undefined ? req.valueBLength : -1;
             const bValue = req.valueBValue || '';
             csv += 'condition,' + op + ',' + aSource + ',' + aReqNo + ',' + aLength + ',"' + aValue + '",' + bSource + ',' + bReqNo + ',' + bLength + ',"' + bValue + '",' + action + '\n';
-        } else if (actionType === 'bulk_in' || actionType === 'interrupt_in') {
-            // Format: bulk_in/interrupt_in,endpoint,length,deviceAddr,timeout,continuous,max_attempts
+        } else if (actionType === 'bulk_in' || actionType === 'interrupt_in' || actionType === 'iso_in') {
+            // Format: bulk_in/interrupt_in/iso_in,endpoint,length,deviceAddr,timeout,continuous,max_attempts
             csv += actionType + ',' + (req.endpoint || 1) + ',' + (req.length || 64) + ',' + 
                    (req.deviceAddr || 0) + ',' + (req.timeout || 1000) + ',' +
                    (req.continuous ? 1 : 0) + ',' + (req.maxAttempts || 10) + '\n';
-        } else if (actionType === 'bulk_out' || actionType === 'interrupt_out') {
-            // Format: bulk_out/interrupt_out,endpoint,dataBytes,deviceAddr,timeout
+        } else if (actionType === 'bulk_out' || actionType === 'interrupt_out' || actionType === 'iso_out') {
+            // Format: bulk_out/interrupt_out/iso_out,endpoint,dataBytes,deviceAddr,timeout
             csv += actionType + ',' + (req.endpoint || 1) + ',"' + (req.dataBytes || '') + '",' +
                    (req.deviceAddr || 0) + ',' + (req.timeout || 1000) + '\n';
         } else {
@@ -1924,6 +1997,14 @@ function handleChainFileImport(event) {
                 imported++;
             } else if (actionType === 'action' && parts.length >= 2) {
                 const subType = parts[1];
+                if (subType === 'config' && parts.length >= 4) {
+                    if (parts[2] === 'reset_on_retry') {
+                        document.getElementById('cfg_resetOnRetry').checked = parts[3] === '1' || parts[3] === 'true';
+                        toggleResetAfterRetries();
+                    }
+                    imported++;
+                    continue;
+                }
                 if (subType === 'http') {
                     chainRequests.push({
                         type: 'action',
@@ -2009,8 +2090,8 @@ function handleChainFileImport(event) {
                     setupOnly: hasSetupOnly
                 });
                 imported++;
-            } else if ((actionType === 'bulk_in' || actionType === 'interrupt_in') && parts.length >= 3) {
-                // Format: bulk_in/interrupt_in,endpoint,length,deviceAddr,timeout,continuous,max_attempts
+            } else if ((actionType === 'bulk_in' || actionType === 'interrupt_in' || actionType === 'iso_in') && parts.length >= 3) {
+                // Format: bulk_in/interrupt_in/iso_in,endpoint,length,deviceAddr,timeout,continuous,max_attempts
                 chainRequests.push({
                     type: actionType,
                     endpoint: parseInt(parts[1]) || 1,
@@ -2022,8 +2103,8 @@ function handleChainFileImport(event) {
                     channel: 1  // Default channel
                 });
                 imported++;
-            } else if ((actionType === 'bulk_out' || actionType === 'interrupt_out') && parts.length >= 3) {
-                // Format: bulk_out/interrupt_out,endpoint,dataBytes,deviceAddr,timeout
+            } else if ((actionType === 'bulk_out' || actionType === 'interrupt_out' || actionType === 'iso_out') && parts.length >= 3) {
+                // Format: bulk_out/interrupt_out/iso_out,endpoint,dataBytes,deviceAddr,timeout
                 chainRequests.push({
                     type: actionType,
                     endpoint: parseInt(parts[1]) || 1,

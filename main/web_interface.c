@@ -381,7 +381,7 @@ static esp_err_t api_single_request_handler(httpd_req_t *req)
             csv_len += snprintf(csv + csv_len, sizeof(csv) - csv_len, ",%"PRIu32",%d,%d",
                 params.timeout, params.deviceAddr, params.channel);
             break;
-        }
+                }
     }
     
     ESP_LOGI(TAG, "API single as chain: %s", csv);
@@ -403,8 +403,8 @@ static esp_err_t api_single_request_handler(httpd_req_t *req)
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Out of memory\"}");
         return ESP_OK;
-    }
-    
+        }
+        
     // Submit as chain - unified path!
     esp_err_t submit_ret = usb_executor_submit_chain(csv_copy, csv_len, http_api_result_cb, NULL, http_api_done_cb, NULL);
     
@@ -423,10 +423,10 @@ static esp_err_t api_single_request_handler(httpd_req_t *req)
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Execution timeout\"}");
         return ESP_OK;
-    }
-    
+        }
+        
     // Build response from result
-    cJSON *root = cJSON_CreateObject();
+        cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "status", (http_api_result_count > 0 && http_api_results[0].status == 0) ? "success" : "failed");
     cJSON_AddNumberToObject(root, "bytes_received", http_api_result_count > 0 ? http_api_results[0].bytes_received : 0);
     
@@ -448,15 +448,15 @@ static esp_err_t api_single_request_handler(httpd_req_t *req)
             free(ascii_str);
         }
     } else {
-        cJSON_AddStringToObject(root, "data", "");
-        cJSON_AddStringToObject(root, "ascii", "");
-    }
-    
-    const char *json_str = cJSON_Print(root);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json_str);
-    free((void *)json_str);
-    cJSON_Delete(root);
+            cJSON_AddStringToObject(root, "data", "");
+            cJSON_AddStringToObject(root, "ascii", "");
+        }
+        
+        const char *json_str = cJSON_Print(root);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, json_str);
+        free((void *)json_str);
+        cJSON_Delete(root);
     
     return ESP_OK;
 }
@@ -1087,7 +1087,7 @@ static esp_err_t api_chain_http_handler(httpd_req_t *req) {
         }
         
         cJSON_AddItemToArray(results, entry);
-    }
+        }
     cJSON_AddItemToObject(root, "results", results);
     
     const char *json_str = cJSON_Print(root);
@@ -1925,7 +1925,7 @@ esp_err_t web_interface_start(void)
             .handler = api_gpio_handler
         };
         httpd_register_uri_handler(server, &api_gpio_post_uri);
-        
+
         // HTTP API for chain execution (POST CSV body)
         httpd_uri_t api_chain_http_uri = {
             .uri = "/api/chain",
@@ -1933,7 +1933,7 @@ esp_err_t web_interface_start(void)
             .handler = api_chain_http_handler
         };
         httpd_register_uri_handler(server, &api_chain_http_uri);
-        
+
         // HTTP API for bruteforce execution (POST JSON body)
         httpd_uri_t api_bruteforce_http_uri = {
             .uri = "/api/bruteforce",
