@@ -1,7 +1,14 @@
 /*
- * USBane - USB Module
+ * USBane - USB Backend Router
  * 
- * Direct DWC2 USB controller access for security research
+ * Unified interface for USB operations that routes to:
+ * - DWC2 hardware USB host (Full-Speed/Low-Speed via USB-OTG port)
+ * - GPIO soft-host (Full-Speed via GPIO bit-banging) [WIP - see LIMITATIONS.md]
+ *
+ * ALL USB operations run on Core 1 via the worker task.
+ *
+ * Copyright 2026 Fehr GmbH
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #ifndef USBANE_H
@@ -10,248 +17,168 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
-#include "freertos/semphr.h"
-
-// USB Constants
-#define USB_SETUP_PACKET_SIZE           8
-#define USB_CONTROL_EP0_MPS             64
-#define USB_MAX_EXTRA_DATA              248     // 256 - 8
-#define USB_DMA_CHUNK_SIZE              64
-#define USB_DEFAULT_TIMEOUT_MS          1000
-#define USB_MAX_NAK_RETRIES             100
-#define USB_DEVICE_DESCRIPTOR_SIZE      18
-#define USB_MAX_PACKET_SIZE             256
-
-// USB FIFO Sizes
-#define USB_RX_FIFO_SIZE                512
-#define USB_TX_FIFO_SIZE                512
-#define USB_TX_FIFO_START               256
-#define USB_PTX_FIFO_SIZE               1024
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// ============================================================================
-// USB Configuration and Data Structures
-// ============================================================================
+#include "dwc2_backend.h"  // For usb_packet_config_t, usb_endpoint_type_t
 
 /**
- * @brief USB packet configuration structure
- * All parameters are fully customizable for testing/fuzzing
- */
-typedef struct {
-    // Standard SETUP packet fields (8 bytes total)
-    uint8_t bmRequestType;      // Request type: direction|type|recipient
-    uint8_t bRequest;           // Request code (e.g., GET_DESCRIPTOR = 0x06)
-    uint16_t wValue;            // Request-specific value
-    uint16_t wIndex;            // Request-specific index
-    uint16_t wLength;           // Data stage length
-    
-    // Extended/malformed parameters
-    size_t packet_size;         // SETUP packet size (8 = normal, >8 = malformed)
-    uint8_t extra_data[248];    // Extra bytes for oversized packets (max 256 total)
-    
-    // Transfer configuration
-    uint8_t device_addr;        // Device address (0 during enumeration)
-    uint8_t endpoint;           // Endpoint number (0 for control)
-    uint16_t max_packet_size;   // EP0 max packet size (8/16/32/64)
-    
-    // Response handling
-    bool expect_response;       // Should we wait for a response?
-    uint32_t timeout_ms;        // Response timeout in milliseconds
-    int max_nak_retries;        // Max NAK retries (0 = no retries, -1 = use default)
-    uint8_t *response_buffer;   // Buffer for response data (can be NULL)
-    size_t response_buffer_size; // Size of response buffer
-    size_t *bytes_received;     // Output: bytes actually received
-    
-    bool setup_only;            // If true, return immediately after SETUP ACK (skip DATA/STATUS)
-    uint8_t data_stage_ep;      // If >0, redirect DATA IN stage to this endpoint (e.g., 10 for EP10)
-} usb_packet_config_t;
-
-/**
- * @brief USB device info structure
- */
-typedef struct {
-    bool connected;
-    uint16_t vid;
-    uint16_t pid;
-    uint8_t device_class;
-    uint8_t device_subclass;
-    uint8_t device_protocol;
-    uint8_t max_packet_size;
-    char manufacturer[64];
-    char product[64];
-    char serial[64];
-} usb_device_info_t;
-
-/**
- * @brief Initialize USB Handler (creates mutex for protection)
- * This must be called before any other USB operations.
- * 
- * @return ESP_OK on success
- */
-esp_err_t usb_handler_start(void);
-
-/**
- * @brief Initialize USB Host hardware (bypassing normal stack)
- * 
- * @return ESP_OK on success
- */
-esp_err_t usbane_init(void);
-
-/**
- * @brief Clear cached device info (call after disconnect)
- */
-void usb_clear_device_info_cache(void);
-
-/**
- * @brief Send USB Reset to device
- * 
- * @return ESP_OK on success
- */
-esp_err_t usb_send_reset(void);
-
-/**
- * @brief Send a USB packet with fully customizable parameters
- * 
- * This is the ONLY send function you need - all parameters are configurable.
- * Can send standard packets, malformed packets, oversized packets, etc.
- * 
- * @param config Pointer to packet configuration
- * @return ESP_OK on success
- */
-esp_err_t usb_send_packet(const usb_packet_config_t *config);
-
-/**
- * @brief Write data to device (DATA OUT stage)
- * 
- * @param data Data to send
- * @param length Data length
- * @param timeout_ms Transfer timeout
- * @return ESP_OK if data sent successfully
- */
-esp_err_t usb_write_data(const uint8_t *data, size_t length, uint32_t timeout_ms);
-
-/**
- * @brief Read response from device (DATA IN stage)
- * 
- * @param buffer Buffer to store response
- * @param max_len Maximum bytes to read
- * @param timeout_ms Timeout in milliseconds
- * @param bytes_read Output: actual bytes read
- * @param max_nak_retries Maximum NAK retries (-1 for default)
- * @return ESP_OK if data received, ESP_ERR_TIMEOUT if no response
- */
-esp_err_t usb_read_response(uint8_t *buffer, size_t max_len, 
-                            uint32_t timeout_ms, size_t *bytes_read,
-                            int max_nak_retries);
-
-/**
- * @brief Bulk/Interrupt IN transfer from any endpoint
- * 
- * Sends IN token to specified endpoint and receives data.
- * 
- * @param endpoint Endpoint number (1-15, direction bit optional)
- * @param device_addr Device address
- * @param buffer Buffer to store received data
- * @param max_len Maximum bytes to read
- * @param timeout_ms Transfer timeout
- * @param bytes_read Output: actual bytes received
- * @return ESP_OK if data received, ESP_ERR_TIMEOUT if no response
+ * @brief USB backend type selection
  */
 typedef enum {
-    USB_EP_TYPE_BULK = 0,
-    USB_EP_TYPE_INTERRUPT = 1,
-    USB_EP_TYPE_ISOCHRONOUS = 2
-} usb_endpoint_type_t;
-
-esp_err_t usb_endpoint_in(uint8_t endpoint, uint8_t device_addr, usb_endpoint_type_t ep_type,
-                          uint8_t channel, uint8_t *buffer, size_t max_len,
-                          uint32_t timeout_ms, size_t *bytes_read);
+    USB_BACKEND_DWC2,       /**< Hardware USB-OTG via DWC2 controller */
+    USB_BACKEND_SOFT_HOST   /**< GPIO bit-bang soft-host (Low-Speed only) */
+} usb_backend_type_t;
 
 /**
- * @brief Continuous Bulk/Interrupt IN transfer with retry
- * 
- * @param endpoint Endpoint number (1-15)
- * @param device_addr Device address
- * @param ep_type Endpoint type (bulk or interrupt)
- * @param channel USB host channel to use
- * @param buffer Buffer to store received data
- * @param max_len Maximum bytes to read
- * @param max_attempts Maximum retry attempts (use UINT32_MAX for infinite)
- * @param attempt_timeout_ms Timeout per attempt in milliseconds
- * @param bytes_read Output: actual bytes received
- * @return ESP_OK if data received, ESP_ERR_TIMEOUT if all attempts failed
+ * @brief Soft-host GPIO pin configuration
  */
-esp_err_t usb_endpoint_in_continuous(uint8_t endpoint, uint8_t device_addr, usb_endpoint_type_t ep_type,
-                                    uint8_t channel, uint8_t *buffer, size_t max_len,
-                                    uint32_t max_attempts, uint32_t attempt_timeout_ms, size_t *bytes_read);
+typedef struct {
+    int dp_pin;             /**< D+ GPIO pin number */
+    int dm_pin;             /**< D- GPIO pin number */
+} usb_soft_host_pins_t;
+
+// ============================================================================
+// Initialization (called from main.c)
+// ============================================================================
 
 /**
- * @brief Bulk/Interrupt OUT transfer to any endpoint
+ * @brief Start USB backend worker task on Core 1
  * 
- * Sends data to specified endpoint.
+ * This starts the worker that handles ALL USB operations.
+ * Call this once at boot before usb_backend_init().
  * 
- * @param endpoint Endpoint number (1-15)
- * @param device_addr Device address
- * @param data Data to send
- * @param length Data length
- * @param timeout_ms Transfer timeout
- * @return ESP_OK if data sent successfully
- */
-esp_err_t usb_endpoint_out(uint8_t endpoint, uint8_t device_addr, usb_endpoint_type_t ep_type,
-                           uint8_t channel, const uint8_t *data, size_t length,
-                           uint32_t timeout_ms);
-
-// Auto-recovery control (useful for exploit chains where resets break state)
-void usb_set_auto_recovery_enabled(bool enabled);
-bool usb_is_auto_recovery_enabled(void);
-
-/**
- * @brief Check if USB device is still connected
- * 
- * @return true if device is connected
- */
-bool usb_is_device_connected(void);
-
-/**
- * @brief Get connection status (for web interface)
- * 
- * @return ESP_OK if connected, ESP_FAIL otherwise
- */
-esp_err_t usbane_get_conn_status(void);
-
-/**
- * @brief Get connected USB device information
- * 
- * @param info Pointer to device info structure to fill
- * @return ESP_OK if device connected and info retrieved, ESP_FAIL otherwise
- */
-esp_err_t usb_get_device_info(usb_device_info_t *info);
-
-/**
- * @brief Save USB PHY configuration to NVS (requires reboot to apply)
- * 
- * @param otg_mode USB OTG mode (0=Host, 1=Device)
- * @param otg_speed USB speed (0=Low-Speed, 1=Full-Speed)
  * @return ESP_OK on success
  */
-esp_err_t usb_save_phy_config(uint8_t otg_mode, uint8_t otg_speed);
+esp_err_t usb_backend_start_worker(void);
+
+/**
+ * @brief Initialize USB backend based on NVS config
+ * 
+ * Reads backend type from NVS and initializes either:
+ * - DWC2 hardware controller, or
+ * - GPIO soft-host pins
+ * 
+ * Must be called after usb_backend_start_worker().
+ * Executes on Core 1 worker.
+ * 
+ * @return ESP_OK on success
+ */
+esp_err_t usb_backend_init(void);
+
+/**
+ * @brief Deinitialize the USB backend
+ * @return ESP_OK on success
+ */
+esp_err_t usb_backend_deinit(void);
 
 // ============================================================================
-// Helper Function
+// Backend Info
 // ============================================================================
 
 /**
- * @brief Create default packet config (GET_DESCRIPTOR for device descriptor)
+ * @brief Get the currently active backend type
+ * @return Current backend type
  */
-usb_packet_config_t usb_packet_config_default(void);
+usb_backend_type_t usb_backend_get_type(void);
 
-#ifdef __cplusplus
-}
-#endif
+/**
+ * @brief Check if using soft-host backend (fast cached check)
+ * @return true if soft-host is active
+ */
+bool usb_backend_is_soft_host(void);
+
+/**
+ * @brief Get backend name string
+ * @param type Backend type
+ * @return Human-readable backend name
+ */
+const char *usb_backend_type_name(usb_backend_type_t type);
+
+/**
+ * @brief Check if soft-host backend is available
+ * @return true (always available on ESP32-S3)
+ */
+bool usb_backend_soft_host_available(void);
+
+// ============================================================================
+// Configuration (call before usb_backend_init)
+// ============================================================================
+
+/**
+ * @brief Set the active backend type (before init)
+ * @param type Backend type to use
+ * @return ESP_OK on success
+ */
+esp_err_t usb_backend_set_type(usb_backend_type_t type);
+
+/**
+ * @brief Configure soft-host GPIO pins (before init)
+ * @param pins GPIO pin configuration
+ * @return ESP_OK on success
+ */
+esp_err_t usb_backend_set_soft_host_pins(const usb_soft_host_pins_t *pins);
+
+/**
+ * @brief Get soft-host GPIO pin configuration
+ * @param pins Output: current pin configuration
+ * @return ESP_OK on success
+ */
+esp_err_t usb_backend_get_soft_host_pins(usb_soft_host_pins_t *pins);
+
+// ============================================================================
+// USB Operations (all execute on Core 1)
+// ============================================================================
+
+/**
+ * @brief Perform a USB bus reset
+ * @return ESP_OK on success
+ */
+esp_err_t usb_backend_reset(void);
+
+/**
+ * @brief Execute a control transfer
+ * 
+ * Routes to DWC2 or soft-host based on active backend.
+ * Executes on Core 1 worker task.
+ * 
+ * @param config Full packet configuration (DWC2-style)
+ * @return ESP_OK on success
+ */
+esp_err_t usb_backend_send_packet(const usb_packet_config_t *config);
+
+/**
+ * @brief Execute an endpoint IN transfer
+ * 
+ * Routes to DWC2 or soft-host based on active backend.
+ * Executes on Core 1 worker task.
+ */
+esp_err_t usb_backend_endpoint_in(
+    uint8_t endpoint,
+    uint8_t device_addr,
+    usb_endpoint_type_t ep_type,
+    uint8_t data_toggle,
+    uint8_t *data,
+    size_t max_len,
+    uint32_t timeout_ms,
+    size_t *bytes_received);
+
+/**
+ * @brief Execute an endpoint OUT transfer
+ * 
+ * Routes to DWC2 or soft-host based on active backend.
+ * Executes on Core 1 worker task.
+ */
+esp_err_t usb_backend_endpoint_out(
+    uint8_t endpoint,
+    uint8_t device_addr,
+    usb_endpoint_type_t ep_type,
+    uint8_t data_toggle,
+    const uint8_t *data,
+    size_t len,
+    uint32_t timeout_ms);
+
+/**
+ * @brief Check if a USB device is connected
+ * @return true if device detected
+ */
+bool usb_backend_is_device_connected(void);
 
 #endif // USBANE_H

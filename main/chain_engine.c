@@ -6,6 +6,7 @@
  */
 
 #include "chain_engine.h"
+#include "dwc2_backend.h"
 #include "usbane.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
@@ -198,7 +199,7 @@ static esp_err_t parse_csv_line_to_entry(char *line, chain_entry_t *entry) {
         entry->ep.endpoint = (uint8_t)parse_hex_or_dec(fields[1]);
         // Data is in field 2 (hex string)
         if (fields[2] && *fields[2]) {
-            entry->ep.dataLen = parse_hex_bytes(fields[2], entry->ep.data, sizeof(entry->ep.data));
+        entry->ep.dataLen = parse_hex_bytes(fields[2], entry->ep.data, sizeof(entry->ep.data));
         }
         entry->ep.length = entry->ep.dataLen;  // Length derived from data
         entry->ep.deviceAddr = (field_count > 3) ? (uint8_t)parse_hex_or_dec(fields[3]) : 0;
@@ -445,6 +446,7 @@ static esp_err_t execute_entry(chain_entry_t *entry, chain_result_t *result) {
             result->wLength = entry->ctrl.wLength;
             result->packetSize = entry->ctrl.packetSize ? entry->ctrl.packetSize : 8;
 
+            // Build config and use unified backend API
             usb_packet_config_t config = usb_packet_config_default();
             config.bmRequestType = entry->ctrl.bmRequestType;
             config.bRequest = entry->ctrl.bRequest;
@@ -470,9 +472,11 @@ static esp_err_t execute_entry(chain_entry_t *entry, chain_result_t *result) {
             
             if (entry->ctrl.dataLen > 0) {
                 memcpy(config.extra_data, entry->ctrl.data, entry->ctrl.dataLen);
+                config.extra_data_len = entry->ctrl.dataLen;
             }
             
-            esp_err_t ret = usb_send_packet(&config);
+            // Unified API routes to correct backend (DWC2 or soft-host)
+            esp_err_t ret = usb_backend_send_packet(&config);
             result->bytes_received = (uint16_t)bytes_rx;
             result->status = (ret == ESP_OK) ? 0 : 2;
             result->data_len = result->bytes_received;
@@ -482,26 +486,21 @@ static esp_err_t execute_entry(chain_entry_t *entry, chain_result_t *result) {
         case CHAIN_TYPE_BULK_IN:
         case CHAIN_TYPE_INTERRUPT_IN:
         case CHAIN_TYPE_ISO_IN: {
+            size_t bytes_read = 0;
+            size_t len = entry->ep.length ? entry->ep.length : 64;
+            uint32_t timeout = entry->ep.timeout ? entry->ep.timeout : 1000;
+            
             usb_endpoint_type_t ep_type = USB_EP_TYPE_BULK;
             if (entry->type == CHAIN_TYPE_INTERRUPT_IN) {
                 ep_type = USB_EP_TYPE_INTERRUPT;
             } else if (entry->type == CHAIN_TYPE_ISO_IN) {
                 ep_type = USB_EP_TYPE_ISOCHRONOUS;
             }
-            size_t bytes_read = 0;
-            size_t len = entry->ep.length ? entry->ep.length : 64;
-            uint32_t timeout = entry->ep.timeout ? entry->ep.timeout : 1000;
             
-            esp_err_t ret;
-            if (entry->ep.continuous && entry->ep.maxAttempts > 1) {
-                ret = usb_endpoint_in_continuous(
-                    entry->ep.endpoint, entry->ep.deviceAddr, ep_type, 1,
-                    result->data, len, entry->ep.maxAttempts, timeout, &bytes_read);
-            } else {
-                ret = usb_endpoint_in(
+            // Unified API routes to correct backend (DWC2 or soft-host)
+            esp_err_t ret = usb_backend_endpoint_in(
                     entry->ep.endpoint, entry->ep.deviceAddr, ep_type, 1,
                     result->data, len, timeout, &bytes_read);
-            }
             
             result->bytes_received = bytes_read;
             result->status = (ret == ESP_OK) ? 0 : 2;
@@ -520,7 +519,8 @@ static esp_err_t execute_entry(chain_entry_t *entry, chain_result_t *result) {
             }
             uint32_t timeout = entry->ep.timeout ? entry->ep.timeout : 1000;
             
-            esp_err_t ret = usb_endpoint_out(
+            // Unified API routes to correct backend (DWC2 or soft-host)
+            esp_err_t ret = usb_backend_endpoint_out(
                 entry->ep.endpoint, entry->ep.deviceAddr, ep_type, 1,
                 entry->ep.data, entry->ep.dataLen, timeout);
             
@@ -555,7 +555,7 @@ static esp_err_t execute_entry(chain_entry_t *entry, chain_result_t *result) {
         }
         
         case CHAIN_TYPE_WAIT_USB_RESET:
-            usb_send_reset();
+            usb_backend_reset();
             vTaskDelay(pdMS_TO_TICKS(100));
             result->status = 0;
             return ESP_OK;
@@ -935,7 +935,7 @@ static void execute_bruteforce_job(const usb_job_bruteforce_t *params, chain_res
                                     config.expect_response = (bmReq & 0x80) != 0;
                                     
                                     bytes_rx = 0;
-                                    esp_err_t ret = usb_send_packet(&config);
+                                    esp_err_t ret = usb_backend_send_packet(&config);
                                     
                                     result.bytes_received = (uint16_t)bytes_rx;
                                     result.data_len = bytes_rx;

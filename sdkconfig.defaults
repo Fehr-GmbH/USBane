@@ -1,5 +1,5 @@
 # USBane Configuration
-CONFIG_USBANE_VERSION="0.2.1"
+CONFIG_USBANE_VERSION="0.2.2"
 
 # Partition Table - Use two OTA partitions for future OTA updates (1700KB each)
 CONFIG_PARTITION_TABLE_TWO_OTA_LARGE=y
@@ -17,6 +17,10 @@ CONFIG_USB_OTG_SUPPORTED=y
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+
+# CPU Frequency - 240MHz required for Full-Speed USB bit-banging
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
 
 # Compiler Optimizations
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
@@ -40,6 +44,15 @@ CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
 # High precision timing for USB timing attacks
 CONFIG_ESP_TIMER_SUPPORTS_ISR_DISPATCH_METHOD=y
 CONFIG_ESP_TIMER_IN_IRAM=y
+
+# High resolution timer (for precise USB bit-banging)
+CONFIG_ESP_TIMER_IMPL_SYSTIMER=y
+
+# Disable cache when running IRAM code for consistent timing
+CONFIG_ESP_SYSTEM_SINGLE_CORE_MODE=n
+
+# Place critical code in IRAM for consistent timing
+CONFIG_SPI_FLASH_ROM_IMPL=y
 
 # Main task stack size
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

@@ -1015,17 +1015,31 @@
                     <button onclick='exportConfigCSV()' style='background:#6c757d;margin:0;padding:8px 12px;font-size:12px;'>Export CSV</button>
                     <button onclick='clearConfig()' style='background:#dc3545;margin:0;padding:8px 12px;font-size:12px;'>Clear All</button>
                 </div>
-                <!-- USB PHY Configuration -->
+                <!-- USB Configuration -->
                 <div style='background:#252525;padding:12px;border-radius:6px;margin-bottom:10px;border:1px solid #444;'>
-                    <h3 style='margin:0 0 15px 0;color:#ff4444;font-size:16px;'>USB PHY Configuration</h3>
+                    <h3 style='margin:0 0 15px 0;color:#ff4444;font-size:16px;'>USB Configuration</h3>
                     <div style='display:grid;grid-template-columns:1fr 1fr;gap:15px;'>
                         <div class='control'>
-                            <label>USB Speed:</label>
+                            <label>USB Backend:</label>
                             <div style='display:flex;border:1px solid #555;border-radius:6px;overflow:hidden;margin-bottom:10px;'>
-                                <div id='usb_speed_full' onclick='selectUsbSpeed("full")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#ff4444;color:#fff;font-weight:bold;transition:all 0.2s;'>Full-Speed (12 Mbps)</div>
-                                <div id='usb_speed_low' onclick='selectUsbSpeed("low")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;'>Low-Speed (1.5 Mbps)</div>
+                                <div id='usb_backend_dwc2' onclick='selectUsbBackend("dwc2")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#ff4444;color:#fff;font-weight:bold;transition:all 0.2s;'>DWC2 Hardware</div>
+                                <div id='usb_backend_soft' onclick='selectUsbBackend("soft")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;'>GPIO Soft-Host</div>
                             </div>
-                            <small style='color:#888;'>USB PHY speed capability. Actual speed is negotiated with device.</small>
+                            <small style='color:#888;'>DWC2 uses built-in USB-OTG port (FS/LS). Soft-Host requires external USB female connector wired to GPIO pins (LS only).</small>
+                        </div>
+                        <div class='control' id='soft_host_pins_config' style='display:none;'>
+                            <label>Soft-Host GPIO Pins:</label>
+                            <div style='display:flex;gap:10px;margin-bottom:10px;'>
+                                <div style='flex:1;'>
+                                    <label style='font-size:12px;'>D+ Pin:</label>
+                                    <input type='number' id='cfg_softHostDpPin' value='16' min='0' max='48' style='width:100%;' onchange='localStorage.setItem("cfg_softHostDpPin", this.value)'>
+                                </div>
+                                <div style='flex:1;'>
+                                    <label style='font-size:12px;'>D- Pin:</label>
+                                    <input type='number' id='cfg_softHostDmPin' value='17' min='0' max='48' style='width:100%;' onchange='localStorage.setItem("cfg_softHostDmPin", this.value)'>
+                                </div>
+                            </div>
+                            <small>Soft-Host: Wire USB D+ and D- directly to GPIO pins. Supports Low-Speed devices only.</small>
                         </div>
                         <div class='control'>
                             <label>OTG Mode:</label>
@@ -1033,7 +1047,7 @@
                                 <div id='otg_mode_host' onclick='selectOtgMode("host")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#ff4444;color:#fff;font-weight:bold;transition:all 0.2s;'>Host</div>
                                 <div id='otg_mode_device' onclick='selectOtgMode("device")' style='flex:1;padding:10px;text-align:center;cursor:pointer;background:#333;color:#888;transition:all 0.2s;'>Device</div>
                             </div>
-                            <small style='color:#888;'>USB OTG mode</small>
+                            <small style='color:#888;'>USB OTG mode (DWC2 only)</small>
                         </div>
                     </div>
                 </div>
@@ -1486,6 +1500,10 @@
                             <li><strong>GreatFET One</strong> - for making us wait for Cynthion</li>
                             <li><strong>Cynthion</strong> - for making us realize we need to build our own tools</li>
                         </ul>
+                        <strong>Open Source Libraries</strong>
+                        <ul>
+                            <li><a href='https://github.com/sdima1357/esp32_usb_soft_host' target='_blank' style='color:#ff6b6b;'>Samsonov Dima (sdima1357)</a> - GPIO bit-bang USB library</li>
+                        </ul>
                     </div>
                 </div>
             </div>
@@ -1548,7 +1566,7 @@
         </footer>
     </div>
 
-    <script src='/app.js'></script>
+    <script src='/app.js?v=backend3'></script>
 </body>
 </html>
 

@@ -360,7 +360,9 @@ action,comment,Device enumerated successfully
 │   │   ├── favicon.ico    # Browser favicon
 │   │   └── logo.svg       # SVG logo
 │   ├── main.c             # Application entry point
-│   ├── usbane.c/.h        # USB hardware access layer (Core 1)
+│   ├── usbane.c/.h        # USB backend router (Core 1)
+│   ├── dwc2_backend.c/.h  # DWC2 hardware USB controller
+│   ├── soft_backend.c/.h  # GPIO bit-bang USB (WIP)
 │   ├── chain_engine.c/.h  # Chain/bruteforce executor (Core 1)
 │   ├── web_interface.c/.h # HTTP/WebSocket server (Core 0)
 │   └── wifi_ap.c/.h       # WiFi AP/STA management
@@ -368,6 +370,7 @@ action,comment,Device enumerated successfully
 ├── sample_images/         # Application screenshots
 ├── applogo.png            # High-res logo for README
 ├── apptext.svg            # Logo text for README
+├── LIMITATIONS.md         # Known issues with GPIO bit-bang backend
 ├── CMakeLists.txt
 ├── sdkconfig.defaults
 └── COPYING

@@ -36,22 +36,24 @@ void app_main(void)
     ESP_LOGI(TAG, "Waiting 2 seconds...");
     vTaskDelay(pdMS_TO_TICKS(2000));
     
-    // Start USB Handler Task on Core 1
-    ESP_LOGI(TAG, "Starting USB Handler on Core 1...");
-    esp_err_t ret = usb_handler_start();
+    // Start USB Backend Worker on Core 1
+    ESP_LOGI(TAG, "Starting USB Backend Worker on Core 1...");
+    esp_err_t ret = usb_backend_start_worker();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start USB handler: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to start USB worker: %s", esp_err_to_name(ret));
         return;
     }
     
-    vTaskDelay(pdMS_TO_TICKS(100));  // Let handler start
+    vTaskDelay(pdMS_TO_TICKS(100));  // Let worker start
     
-    // Initialize USB Host hardware (via handler on Core 1)
-    ESP_LOGI(TAG, "Initializing USB Host hardware...");
-    ret = usbane_init();
+    // Initialize USB Backend (reads config from NVS, inits on Core 1)
+    ESP_LOGI(TAG, "Initializing USB Backend...");
+    ret = usb_backend_init();
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "USB init returned: %s (continuing anyway)", esp_err_to_name(ret));
-        // Don't return - keep running so web interface works and we can detect device later
+        ESP_LOGW(TAG, "USB backend init returned: %s (continuing anyway)", esp_err_to_name(ret));
+        // Don't return - keep running so web interface works
+    } else {
+        ESP_LOGI(TAG, "USB Backend: %s", usb_backend_type_name(usb_backend_get_type()));
     }
     
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -73,7 +75,7 @@ void app_main(void)
     bool last_connected = false;
     
     while (1) {
-        bool connected = usb_is_device_connected();
+        bool connected = usb_backend_is_device_connected();
         
         if (connected != last_connected) {
             if (connected) {

@@ -2502,7 +2502,9 @@ function saveConfig() {
     
     // Read from localStorage (already set by toggle functions)
     let otgMode = localStorage.getItem('cfg_otgMode') || '0';
-    let otgSpeed = localStorage.getItem('cfg_usbSpeed') || '1';
+    let usbBackend = localStorage.getItem('cfg_usbBackend') || 'dwc2';
+    let softDp = document.getElementById('cfg_softHostDpPin').value || '16';
+    let softDm = document.getElementById('cfg_softHostDmPin').value || '17';
     
     // Save other settings to localStorage
     localStorage.setItem('cfg_maxRetries', document.getElementById('cfg_maxRetries').value);
@@ -2515,6 +2517,8 @@ function saveConfig() {
     localStorage.setItem('cfg_resetOnRetry', document.getElementById('cfg_resetOnRetry').checked);
     localStorage.setItem('cfg_resetAfterRetries', document.getElementById('cfg_resetAfterRetries').value);
     localStorage.setItem('cfg_wifi_mode', currentWifiMode);
+    localStorage.setItem('cfg_softHostDpPin', softDp);
+    localStorage.setItem('cfg_softHostDmPin', softDm);
     
     let s = document.getElementById('cfg_status');
     s.innerText = 'Saving and rebooting...';
@@ -2531,7 +2535,10 @@ function saveConfig() {
         wifiParams += '&staPassword=' + encodeURIComponent(document.getElementById('cfg_sta_password').value);
     }
     
-    fetch('/api/save_config?otgMode=' + otgMode + '&otgSpeed=' + otgSpeed + wifiParams, { method: 'POST' })
+    // Build USB backend params
+    let usbParams = '&usbBackend=' + usbBackend + '&softDp=' + softDp + '&softDm=' + softDm;
+    
+    fetch('/api/save_config?otgMode=' + otgMode + usbParams + wifiParams, { method: 'POST' })
     .then(r => r.json())
     .then(d => {
         s.innerText = d.message || d.status;
@@ -2603,24 +2610,41 @@ function selectWifiMode(mode) {
     localStorage.setItem('cfg_wifi_mode', mode);
 }
 
-function selectUsbSpeed(speed) {
-    if (speed === 'full') {
-        document.getElementById('usb_speed_full').style.background = '#ff4444';
-        document.getElementById('usb_speed_full').style.color = '#fff';
-        document.getElementById('usb_speed_full').style.fontWeight = 'bold';
-        document.getElementById('usb_speed_low').style.background = '#333';
-        document.getElementById('usb_speed_low').style.color = '#888';
-        document.getElementById('usb_speed_low').style.fontWeight = 'normal';
-        localStorage.setItem('cfg_usbSpeed', '1');
+function selectUsbBackend(backend) {
+    const dwc2Btn = document.getElementById('usb_backend_dwc2');
+    const softBtn = document.getElementById('usb_backend_soft');
+    const softPinsConfig = document.getElementById('soft_host_pins_config');
+    
+    if (backend === 'dwc2') {
+        dwc2Btn.style.background = '#ff4444';
+        dwc2Btn.style.color = '#fff';
+        dwc2Btn.style.fontWeight = 'bold';
+        softBtn.style.background = '#333';
+        softBtn.style.color = '#888';
+        softBtn.style.fontWeight = 'normal';
+        softPinsConfig.style.display = 'none';
+        localStorage.setItem('cfg_usbBackend', 'dwc2');
     } else {
-        document.getElementById('usb_speed_low').style.background = '#ff4444';
-        document.getElementById('usb_speed_low').style.color = '#fff';
-        document.getElementById('usb_speed_low').style.fontWeight = 'bold';
-        document.getElementById('usb_speed_full').style.background = '#333';
-        document.getElementById('usb_speed_full').style.color = '#888';
-        document.getElementById('usb_speed_full').style.fontWeight = 'normal';
-        localStorage.setItem('cfg_usbSpeed', '0');
+        softBtn.style.background = '#ff4444';
+        softBtn.style.color = '#fff';
+        softBtn.style.fontWeight = 'bold';
+        dwc2Btn.style.background = '#333';
+        dwc2Btn.style.color = '#888';
+        dwc2Btn.style.fontWeight = 'normal';
+        softPinsConfig.style.display = 'block';
+        localStorage.setItem('cfg_usbBackend', 'soft');
     }
+}
+
+function getUsbBackend() {
+    return localStorage.getItem('cfg_usbBackend') || 'dwc2';
+}
+
+function getSoftHostPins() {
+    return {
+        dpPin: parseInt(document.getElementById('cfg_softHostDpPin').value) || 16,
+        dmPin: parseInt(document.getElementById('cfg_softHostDmPin').value) || 17
+    };
 }
 
 function selectOtgMode(mode) {
@@ -2668,12 +2692,12 @@ function loadWifiConfig() {
 }
 
 function loadConfig() {
-    // Load USB Speed toggle
-    const usbSpeed = localStorage.getItem('cfg_usbSpeed');
-    if (usbSpeed === '0') {
-        selectUsbSpeed('low');
+    // Load USB Backend toggle
+    const usbBackend = localStorage.getItem('cfg_usbBackend');
+    if (usbBackend === 'soft') {
+        selectUsbBackend('soft');
     } else {
-        selectUsbSpeed('full');
+        selectUsbBackend('dwc2');
     }
     
     // Load OTG Mode toggle
@@ -2694,6 +2718,10 @@ function loadConfig() {
     if(localStorage.getItem('cfg_resetOnRetry') !== null) document.getElementById('cfg_resetOnRetry').checked = localStorage.getItem('cfg_resetOnRetry') === 'true';
     if(localStorage.getItem('cfg_resetAfterRetries')) document.getElementById('cfg_resetAfterRetries').value = localStorage.getItem('cfg_resetAfterRetries');
     toggleResetAfterRetries(); // Apply initial state
+    
+    // Load soft-host GPIO pins
+    if(localStorage.getItem('cfg_softHostDpPin')) document.getElementById('cfg_softHostDpPin').value = localStorage.getItem('cfg_softHostDpPin');
+    if(localStorage.getItem('cfg_softHostDmPin')) document.getElementById('cfg_softHostDmPin').value = localStorage.getItem('cfg_softHostDmPin');
     
     // Load WiFi config
     loadWifiConfig();
@@ -3678,8 +3706,8 @@ function handleConfigFileImport(event) {
             const v = value.trim();
             
             switch(k) {
-                case 'USB Speed':
-                    selectUsbSpeed(v === 'Low-Speed' ? 'low' : 'full');
+                case 'USB Backend':
+                    selectUsbBackend(v === 'GPIO Soft-Host' ? 'soft' : 'dwc2');
                     break;
                 case 'OTG Mode':
                     selectOtgMode(v === 'Device' ? 'device' : 'host');
@@ -3741,7 +3769,7 @@ function clearConfig() {
     if (!confirm('Reset all configuration to defaults? This will NOT save to device.')) return;
     
     // Reset to defaults
-    selectUsbSpeed('full');
+    selectUsbBackend('dwc2');
     selectOtgMode('host');
     document.getElementById('cfg_maxRetries').value = '100';
     document.getElementById('cfg_timeout').value = '1000';

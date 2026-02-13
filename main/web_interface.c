@@ -4,6 +4,7 @@
  */
 
 #include "web_interface.h"
+#include "dwc2_backend.h"
 #include "usbane.h"
 #include "chain_engine.h"
 #include "esp_http_server.h"
@@ -465,7 +466,7 @@ static esp_err_t api_single_request_handler(httpd_req_t *req)
 static esp_err_t api_status_handler(httpd_req_t *req)
 {
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "connected", usb_is_device_connected());
+    cJSON_AddBoolToObject(root, "connected", usb_backend_is_device_connected());
     
     const char *json_str = cJSON_Print(root);
     httpd_resp_set_type(req, "application/json");
@@ -653,7 +654,7 @@ static esp_err_t api_reset_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "API: Manual USB Reset requested");
     
-    if (!usb_is_device_connected()) {
+    if (!usb_backend_is_device_connected()) {
         cJSON *root = cJSON_CreateObject();
         cJSON_AddStringToObject(root, "status", "error");
         cJSON_AddStringToObject(root, "message", "No device connected");
@@ -668,11 +669,11 @@ static esp_err_t api_reset_handler(httpd_req_t *req)
     }
     
     // Send USB reset
-    esp_err_t ret = usb_send_reset();
+    esp_err_t ret = usb_backend_reset();
     
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "status", ret == ESP_OK ? "success" : "failed");
-    cJSON_AddBoolToObject(root, "connected", usb_is_device_connected());
+    cJSON_AddBoolToObject(root, "connected", usb_backend_is_device_connected());
     
     const char *json_str = cJSON_Print(root);
     httpd_resp_set_type(req, "application/json");
@@ -691,7 +692,9 @@ static esp_err_t api_save_config_handler(httpd_req_t *req)
     
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         char otg_mode_str[8] = {0};
-        char otg_speed_str[8] = {0};
+        char usb_backend_str[16] = {0};
+        char soft_dp_str[8] = {0};
+        char soft_dm_str[8] = {0};
         char wifi_mode_str[8] = {0};
         char sta_ssid[33] = {0};
         char sta_password[65] = {0};
@@ -699,14 +702,26 @@ static esp_err_t api_save_config_handler(httpd_req_t *req)
         char ap_password[65] = {0};
         
         uint8_t otg_mode = 0;  // Default: Host
-        uint8_t otg_speed = 1; // Default: Full-Speed
+        uint8_t usb_backend = 0; // Default: DWC2 (0=DWC2, 1=Soft-Host)
+        int8_t soft_dp = -1;
+        int8_t soft_dm = -1;
         
         if (httpd_query_key_value(query, "otgMode", otg_mode_str, sizeof(otg_mode_str)) == ESP_OK) {
             otg_mode = (uint8_t)atoi(otg_mode_str);
         }
         
-        if (httpd_query_key_value(query, "otgSpeed", otg_speed_str, sizeof(otg_speed_str)) == ESP_OK) {
-            otg_speed = (uint8_t)atoi(otg_speed_str);
+        if (httpd_query_key_value(query, "usbBackend", usb_backend_str, sizeof(usb_backend_str)) == ESP_OK) {
+            if (strcmp(usb_backend_str, "soft") == 0) {
+                usb_backend = 1;
+            }
+        }
+        
+        if (httpd_query_key_value(query, "softDp", soft_dp_str, sizeof(soft_dp_str)) == ESP_OK) {
+            soft_dp = (int8_t)atoi(soft_dp_str);
+        }
+        
+        if (httpd_query_key_value(query, "softDm", soft_dm_str, sizeof(soft_dm_str)) == ESP_OK) {
+            soft_dm = (int8_t)atoi(soft_dm_str);
         }
         
         // Parse WiFi settings
@@ -716,10 +731,22 @@ static esp_err_t api_save_config_handler(httpd_req_t *req)
         httpd_query_key_value(query, "apSsid", ap_ssid, sizeof(ap_ssid));
         httpd_query_key_value(query, "apPassword", ap_password, sizeof(ap_password));
         
-        ESP_LOGI(TAG, "API: Save config - otg_mode=%d, otg_speed=%d, wifi_mode=%s", otg_mode, otg_speed, wifi_mode_str);
+        ESP_LOGI(TAG, "API: Save config - otg_mode=%d, usb_backend=%d, soft_pins=%d/%d, wifi_mode=%s", 
+                 otg_mode, usb_backend, soft_dp, soft_dm, wifi_mode_str);
         
-        // Save USB PHY config to NVS
-        esp_err_t ret = usb_save_phy_config(otg_mode, otg_speed);
+        // Save USB config to NVS (backend + soft-host pins)
+        esp_err_t ret = usb_save_phy_config(otg_mode, usb_backend);
+        
+        // Save soft-host pins to NVS if specified
+        if (usb_backend == 1 && soft_dp >= 0 && soft_dm >= 0) {
+            nvs_handle_t nvs;
+            if (nvs_open("usb_config", NVS_READWRITE, &nvs) == ESP_OK) {
+                nvs_set_i8(nvs, "soft_dp", soft_dp);
+                nvs_set_i8(nvs, "soft_dm", soft_dm);
+                nvs_commit(nvs);
+                nvs_close(nvs);
+            }
+        }
         
         // Save WiFi config to NVS
         if (strlen(wifi_mode_str) > 0) {
