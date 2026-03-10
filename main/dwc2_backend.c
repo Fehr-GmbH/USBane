@@ -608,6 +608,48 @@ esp_err_t dwc2_init_impl(void) {
     return ESP_OK;
 }
 
+esp_err_t dwc2_vbus_power_cycle_impl(void) {
+    ESP_LOGI(TAG, "═══════════════════════════════════════");
+    ESP_LOGI(TAG, "VBUS Power Cycle — full device reset");
+    ESP_LOGI(TAG, "═══════════════════════════════════════");
+    
+    // Disable VBUS power
+    ESP_LOGI(TAG, "Cutting VBUS power...");
+    usb_dwc_ll_hprt_dis_pwr(hal_context.dev);
+    vTaskDelay(pdMS_TO_TICKS(500));  // Let capacitors discharge
+    
+    // Flush all FIFOs and clear interrupts
+    usb_dwc_ll_grstctl_flush_nptx_fifo(hal_context.dev);
+    usb_dwc_ll_grstctl_flush_rx_fifo(hal_context.dev);
+    usb_dwc_ll_gintsts_clear_intrs(hal_context.dev, 0xFFFFFFFF);
+    
+    // Halt all channels
+    for (int i = 0; i < 8; i++) {
+        volatile usb_dwc_host_chan_regs_t *chan = &hal_context.dev->host_chans[i];
+        if (usb_dwc_ll_hcchar_chan_is_enabled(chan)) {
+            usb_dwc_ll_hcchar_disable_chan(chan);
+        }
+        usb_dwc_ll_hcint_read_and_clear_intrs(chan);
+    }
+    
+    // Re-enable VBUS power
+    ESP_LOGI(TAG, "Restoring VBUS power...");
+    usb_dwc_ll_hprt_en_pwr(hal_context.dev);
+    vTaskDelay(pdMS_TO_TICKS(800));  // Wait for device to fully power up
+    
+    // Reset failure counters
+    consecutive_failures = 0;
+    recovery_attempts = 0;
+    
+    // Perform bus reset to enumerate
+    ESP_LOGI(TAG, "Bus reset after power cycle...");
+    esp_err_t ret = dwc2_send_reset_impl();
+    
+    vTaskDelay(pdMS_TO_TICKS(200));  // Extra settle time
+    ESP_LOGI(TAG, "VBUS power cycle complete");
+    return ret;
+}
+
 esp_err_t dwc2_send_reset_impl(void) {
     ESP_LOGI(TAG, "═══════════════════════════════════════");
     ESP_LOGI(TAG, "Starting USB Reset & Speed Negotiation");
@@ -1346,8 +1388,9 @@ esp_err_t dwc2_endpoint_in_impl(const usb_endpoint_params_t *params) {
     usb_dwc_ll_hctsiz_init(chan_regs);
     chan_regs->hctsiz_reg.xfersize = rx_len;
     chan_regs->hctsiz_reg.pktcnt = (rx_len + 63) / 64;
-    // Use DATA0 for initial bulk/interrupt IN (standard USB start)
-    usb_dwc_ll_hctsiz_set_pid(chan_regs, 0);
+    // Set DATA PID: 0=DATA0, 2=DATA1, -1 or default=DATA0
+    int pid = (params->data_pid == 2) ? 2 : 0;
+    usb_dwc_ll_hctsiz_set_pid(chan_regs, pid);
     if (params->ep_type == USB_EP_TYPE_ISOCHRONOUS) {
         usb_dwc_ll_hctsiz_set_sched_info(chan_regs, 1, 0);
     }

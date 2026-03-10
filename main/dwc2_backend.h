@@ -275,10 +275,12 @@ typedef struct {
     size_t max_len;            // Buffer/data length
     uint32_t timeout_ms;
     size_t *bytes_read;        // For IN: output bytes received
+    int8_t data_pid;           // Data PID: 0=DATA0, 2=DATA1, -1=auto(DATA0)
 } usb_endpoint_params_t;
 
 esp_err_t dwc2_endpoint_in_impl(const usb_endpoint_params_t *params);
 esp_err_t dwc2_endpoint_out_impl(const usb_endpoint_params_t *params);
+esp_err_t dwc2_vbus_power_cycle_impl(void);
 
 // Check if device connected (no Core 1 wrapper needed)
 bool dwc2_is_device_connected(void);

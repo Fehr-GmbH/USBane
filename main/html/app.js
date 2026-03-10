@@ -1110,6 +1110,9 @@ function renderChain() {
             } else if (req.waitType === 'usb_reset') {
                 waitLabel = 'WAIT: USB Reset';
                 configInfo = req.note || 'USB Reset';
+            } else if (req.waitType === 'vbus_cycle') {
+                waitLabel = 'WAIT: VBUS Cycle';
+                configInfo = 'Full power cycle (VBUS off/on + reset)';
             } else {
                 waitLabel = 'WAIT: Webhook';
                 configInfo = 'ID: ' + (req.triggerId || 'N/A');
@@ -1149,6 +1152,10 @@ function renderChain() {
             } else if (req.actionType === 'goto') {
                 actionLabel = 'GOTO';
                 configInfo = 'Jump to index ' + (req.gotoReqNo || 0);
+            } else if (req.actionType === 'add32') {
+                actionLabel = 'ADD32';
+                var fieldName = req.add32Field || 'wValue';
+                configInfo = '+' + (req.add32Increment || '0x40') + ' → ' + fieldName + ' of entries [' + (req.add32Entries || []).join(',') + ']';
             } else {
                 actionLabel = 'ACTION';
                 configInfo = 'Unknown';
@@ -1574,6 +1581,8 @@ function buildChainCSV() {
                 csv += 'waitfor,delay,' + (req.duration || 1000) + '\n';
             } else if (req.waitType === 'usb_reset') {
                 csv += 'waitfor,usb_reset\n';
+            } else if (req.waitType === 'vbus_cycle') {
+                csv += 'waitfor,vbus_cycle\n';
             } else if (req.waitType === 'button') {
                 csv += 'waitfor,button,"' + (req.label || 'Press Continue') + '",' + (req.timeout || 0) + '\n';
             } else if (req.waitType === 'webhook') {
@@ -1596,6 +1605,9 @@ function buildChainCSV() {
                 csv += 'action,gpio_out,' + (req.gpioPin || 0) + ',' + (req.gpioLevel || 0) + '\n';
             } else if (req.actionType === 'http') {
                 csv += 'action,http,"' + (req.url || 'http://example.com') + '",' + (req.method || 'get') + '\n';
+            } else if (req.actionType === 'add32') {
+                var fieldPart = (req.add32Field && req.add32Field !== 'wValue') ? ',' + req.add32Field : '';
+                csv += 'action,add32,' + (req.add32Increment || '0x40') + ',' + (req.add32Entries || [0,0,0,0]).join(',') + fieldPart + '\n';
             }
         } else if (actionType === 'condition') {
             csv += 'condition,' + (req.operator || '==') + ',' + 
@@ -1708,18 +1720,20 @@ function executeChainNative() {
                 4: 'interrupt_out',
                 5: 'iso_in',
                 6: 'iso_out',
-                7: 'waitfor',
-                8: 'waitfor',
-                9: 'waitfor',
-                10: 'waitfor',
-                11: 'waitfor',
-                12: 'action',
-                13: 'action',
-                14: 'action',
-                15: 'action',
-                16: 'action',
-                17: 'config',
-                18: 'condition'
+                7: 'waitfor',       // WAIT_DELAY
+                8: 'waitfor',       // WAIT_GPIO
+                9: 'waitfor',       // WAIT_USB_RESET
+                10: 'waitfor',      // WAIT_VBUS_CYCLE
+                11: 'waitfor',      // WAIT_BUTTON
+                12: 'waitfor',      // WAIT_WEBHOOK
+                13: 'action',       // ACTION_COPY
+                14: 'action',       // ACTION_GOTO
+                15: 'action',       // ACTION_COMMENT
+                16: 'action',       // ACTION_GPIO_OUT
+                17: 'action',       // ACTION_HTTP
+                18: 'config',       // ACTION_CONFIG
+                19: 'action',       // ACTION_ADD32
+                20: 'condition'     // CONDITION
             };
             if (msg.t === 17) {
                 // config action inserted by UI; don't render a row
@@ -1856,6 +1870,8 @@ function exportChainCSV() {
                 csv += 'waitfor,delay,' + (req.duration || 1000) + '\n';
             } else if (req.waitType === 'usb_reset') {
                 csv += 'waitfor,usb_reset,"' + (req.note || 'USB Reset') + '"\n';
+            } else if (req.waitType === 'vbus_cycle') {
+                csv += 'waitfor,vbus_cycle\n';
             } else {
                 csv += 'waitfor,button,"' + (req.label || 'Press Continue') + '"\n';
             }
@@ -1870,6 +1886,9 @@ function exportChainCSV() {
                 csv += 'action,copy,' + req.copyFromSource + ',' + (req.copyFromReqNo || -1) + ',' + (req.copyFromOffset || 0) + ',' + (req.copyFromLength || -1) + ',' + (req.copyToField || 'wValue') + ',' + (req.copyToReqNo || -1) + '\n';
             } else if (req.actionType === 'goto') {
                 csv += 'action,goto,' + (req.gotoReqNo || 0) + '\n';
+            } else if (req.actionType === 'add32') {
+                var fieldPart2 = (req.add32Field && req.add32Field !== 'wValue') ? ',' + req.add32Field : '';
+                csv += 'action,add32,' + (req.add32Increment || '0x40') + ',' + (req.add32Entries || [0,0,0,0]).join(',') + fieldPart2 + '\n';
             }
         } else if (actionType === 'condition') {
             const op = req.operator || '==';
@@ -1893,6 +1912,11 @@ function exportChainCSV() {
             csv += actionType + ',' + (req.endpoint || 1) + ',"' + (req.dataBytes || '') + '",' +
                    (req.deviceAddr || 0) + ',' + (req.timeout || 1000) + '\n';
         } else {
+            // Append flags if set
+            let flags = [];
+            if (req.noRetry) flags.push('noretry');
+            if (req.setupOnly) flags.push('setuponly');
+            if (req.dataStageEp) flags.push('ep' + req.dataStageEp);
             let line = [
                 'control',
                 req.bmRequestType,
@@ -1903,15 +1927,9 @@ function exportChainCSV() {
                 req.packetSize,
                 req.dataMode || 'separate',
                 '"' + (req.dataBytes || '') + '"',
-                req.dataStageEp || 0
+                req.deviceAddr || 0,
+                flags.join('_')
             ].join(',');
-            // Append flags if set
-            let flags = [];
-            if (req.noRetry) flags.push('noretry');
-            if (req.setupOnly) flags.push('setuponly');
-            if (flags.length > 0) {
-                line += ',' + flags.join('_');
-            }
             csv += line + '\n';
         }
     });
@@ -1987,6 +2005,12 @@ function handleChainFileImport(event) {
                         waitType: 'usb_reset',
                         note: parts[2] || 'USB Reset'
                     });
+                } else if (waitType === 'vbus_cycle') {
+                    chainRequests.push({
+                        type: 'waitfor',
+                        waitType: 'vbus_cycle',
+                        note: 'VBUS Power Cycle'
+                    });
                 } else {
                     chainRequests.push({
                         type: 'waitfor',
@@ -2047,6 +2071,17 @@ function handleChainFileImport(event) {
                         gotoReqNo: parseInt(parts[2]) || 0
                     });
                     imported++;
+                } else if (subType === 'add32' && parts.length >= 7) {
+                    // Format: action,add32,increment,e0,e1,e2,e3[,field]
+                    var add32Field = (parts.length >= 8 && parts[7]) ? parts[7].trim() : 'wValue';
+                    chainRequests.push({
+                        type: 'action',
+                        actionType: 'add32',
+                        add32Increment: parts[2] || '0x40',
+                        add32Entries: [parts[3], parts[4], parts[5], parts[6]],
+                        add32Field: add32Field
+                    });
+                    imported++;
                 }
             } else if (actionType === 'condition' && parts.length >= 11) {
                 // Format: condition,operator,aSource,aReqNo,aLength,aValue,bSource,bReqNo,bLength,bValue,action
@@ -2067,13 +2102,16 @@ function handleChainFileImport(event) {
                 });
                 imported++;
             } else if (actionType === 'control' && parts.length >= 7) {
-                // Format: control,bmRequestType,bRequest,wValue,wIndex,wLength,packetSize,dataMode,dataBytes,dataStageEp,flags
-                // parts[9] = dataStageEp (0=normal, >0=redirect DATA IN to this EP)
-                // parts[10] = flags: noretry, setup_only (comma-separated or single)
-                const dataStageEp = parseInt(parts[9]) || 0;
+                // Format: control,bmRequestType,bRequest,wValue,wIndex,wLength,packetSize,dataMode,dataBytes,deviceAddr,flags
+                // parts[9] = deviceAddr (0=default)
+                // parts[10] = flags: noretry, setuponly, epXX (underscore-separated)
+                const deviceAddr = parseInt(parts[9]) || 0;
                 const flagsStr = (parts[10] || '').toLowerCase().trim();
                 const hasNoRetry = flagsStr.includes('noretry');
                 const hasSetupOnly = flagsStr.includes('setuponly');
+                // Parse dataStageEp from flags (format: ep10, ep5, etc.)
+                const epMatch = flagsStr.match(/ep(\d+)/);
+                const dataStageEp = epMatch ? parseInt(epMatch[1]) : 0;
                 chainRequests.push({
                     type: 'control',
                     bmRequestType: parts[1],
@@ -2085,7 +2123,7 @@ function handleChainFileImport(event) {
                     dataMode: parts[7] || 'separate',
                     dataBytes: parts[8] || '',
                     dataStageEp: dataStageEp,
-                    deviceAddr: 0,  // Use device address from global state
+                    deviceAddr: deviceAddr,
                     noRetry: hasNoRetry,
                     setupOnly: hasSetupOnly
                 });
@@ -2178,7 +2216,11 @@ function clearTable() {
     if(!confirm('Clear all results?')) return;
     document.getElementById('results_table').innerHTML = '';
     req_count = 0;
+    allResultsData = []; // Clear the full data store too
 }
+
+// Full data store for exports (keeps ALL results, not just visible DOM rows)
+let allResultsData = [];
 
 let sortDir = {};
 
@@ -2204,6 +2246,15 @@ function addTableRow(bmReqType, bReq, wVal, wIdx, wLen, pktSize, rxBytes, respHe
     let isFailed = (respHex === 'FAILED' || respHex === 'ERROR');
     let fullHex = (respHex || '').toUpperCase().replace(/\s/g,'');
     let fullAscii = ascii || '';
+    
+    // Store ALL data for exports (even if DOM row gets pruned)
+    allResultsData.push({
+        num: req_count,
+        bmReqType, bReq, wVal, wIdx, wLen, pktSize, rxBytes,
+        respHex: fullHex,
+        ascii: fullAscii,
+        isFailed
+    });
     let row = '<tr data-rxbytes="' + rxBytes + '" data-resphex="' + fullHex + '" data-ascii="' + fullAscii.replace(/"/g, '&quot;') + '" data-failed="' + (isFailed ? '1' : '0') + '">';
     row += '<td data-sort="' + req_count + '" style="padding:4px;border:1px solid #555;">' + req_count + '</td>';
     row += '<td style="padding:4px;border:1px solid #555;">' + bmReqType + '</td>';
@@ -2224,8 +2275,9 @@ function addTableRow(bmReqType, bReq, wVal, wIdx, wLen, pktSize, rxBytes, respHe
     let asciiStyle = fullAscii.length > 16 ? 'cursor:pointer;color:#4da6ff;text-decoration:underline;' : '';
     row += '<td style="padding:4px;border:1px solid #555;max-width:100px;overflow:hidden;' + asciiStyle + '" onclick="showFullResponse(this.parentNode)">' + asciiData + '</td></tr>';
     
-    document.getElementById('results_table').insertAdjacentHTML('afterbegin', row);
-    applyFilters();  // Apply current filters to new row
+    let table = document.getElementById('results_table');
+    table.insertAdjacentHTML('afterbegin', row);
+    onNewRow();
 }
 
 // Show full response data in a modal
@@ -2316,13 +2368,17 @@ function applyFilters() {
     let containsStr = (document.getElementById('filter_contains').value || '').toUpperCase().replace(/\s/g,'');
     let filterMode = document.getElementById('filter_mode').value;
     
-    let rows = document.querySelectorAll('#results_table tr');
+    // Use children instead of querySelectorAll for better performance
+    let table = document.getElementById('results_table');
+    let rows = table.children;
     let shown = 0, hidden = 0;
     
-    rows.forEach(row => {
-        let rxBytes = parseInt(row.getAttribute('data-rxbytes')) || 0;
-        let respHex = row.getAttribute('data-resphex') || '';
-        let isFailed = row.getAttribute('data-failed') === '1';
+    // Process in batches to avoid blocking UI
+    for (let i = 0; i < rows.length; i++) {
+        let row = rows[i];
+        let rxBytes = parseInt(row.dataset.rxbytes) || 0;
+        let respHex = row.dataset.resphex || '';
+        let isFailed = row.dataset.failed === '1';
         
         let hide = false;
         
@@ -2345,7 +2401,7 @@ function applyFilters() {
         
         row.style.display = hide ? 'none' : '';
         if (hide) hidden++; else shown++;
-    });
+    }
     
     document.getElementById('filter_stats').innerText = shown + '/' + (shown + hidden) + ' rows';
 }
@@ -2355,6 +2411,14 @@ function resetFilters() {
     document.getElementById('filter_minBytes').value = '0';
     document.getElementById('filter_contains').value = '';
     selectFilterMode('include');
+    applyFilters();
+}
+
+// Called when new rows are added - only apply if Live mode is on
+function onNewRow() {
+    if (document.getElementById('filter_autoUpdate').checked) {
+        applyFilters();
+    }
 }
 
 function exportResults(format) {
@@ -2365,8 +2429,11 @@ function exportResults(format) {
         if (row.style.display === 'none') return; // Skip hidden rows
         let cells = row.querySelectorAll('td');
         if (cells.length < 9) return;
+        // Use data attributes for full hex/ascii (innerText is truncated for display)
+        let fullHex = row.dataset.resphex || '';
+        let fullAscii = row.dataset.ascii || '';
         data.push({
-            num: cells[0].innerText,
+            num: parseInt(cells[0].innerText) || 0,
             bmReqType: cells[1].innerText,
             bReq: cells[2].innerText,
             wVal: cells[3].innerText,
@@ -2374,8 +2441,8 @@ function exportResults(format) {
             wLen: cells[5].innerText,
             pktSize: cells[6].innerText,
             rxBytes: cells[7].innerText,
-            respHex: cells[8].innerText,
-            ascii: cells[9] ? cells[9].innerText : ''
+            respHex: fullHex,
+            ascii: fullAscii
         });
     });
     
@@ -2383,6 +2450,9 @@ function exportResults(format) {
         alert('No visible rows to export');
         return;
     }
+    
+    // Sort by row number ascending (oldest/first request at top)
+    data.sort((a, b) => a.num - b.num);
     
     let output = '';
     let filename = 'usb_dump_' + new Date().toISOString().slice(0,19).replace(/:/g,'-');
@@ -2393,19 +2463,8 @@ function exportResults(format) {
             output += [d.num, d.bmReqType, d.bReq, d.wVal, d.wIdx, d.wLen, d.pktSize, d.rxBytes, '"'+d.respHex+'"', '"'+d.ascii+'"'].join(',') + '\n';
         });
         filename += '.csv';
-    } else if (format === 'hex') {
-        // Raw hex dump - just response bytes sorted by wIdx for memory dump
-        data.sort((a,b) => parseInt(a.wIdx,16) - parseInt(b.wIdx,16));
-        data.forEach(d => {
-            let hex = d.respHex.replace(/\s/g,'');
-            if (hex && hex !== 'FAILED' && hex !== 'ERROR') {
-                output += d.wIdx + ': ' + hex + '\n';
-            }
-        });
-        filename += '.hex';
     } else if (format === 'bin') {
-        // Binary format - combine all hex responses sorted by wIdx
-        data.sort((a,b) => parseInt(a.wIdx,16) - parseInt(b.wIdx,16));
+        // Binary format - combine all hex responses in chronological order (oldest first)
         let hexStr = '';
         data.forEach(d => {
             let hex = d.respHex.replace(/\s/g,'');

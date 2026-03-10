@@ -160,6 +160,17 @@ esp_err_t usb_backend_endpoint_in(
     uint32_t timeout_ms,
     size_t *bytes_received);
 
+esp_err_t usb_backend_endpoint_in_with_pid(
+    uint8_t endpoint,
+    uint8_t device_addr,
+    usb_endpoint_type_t ep_type,
+    uint8_t channel,
+    int8_t data_pid,
+    uint8_t *data,
+    size_t max_len,
+    uint32_t timeout_ms,
+    size_t *bytes_received);
+
 /**
  * @brief Execute an endpoint OUT transfer
  * 

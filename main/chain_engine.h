@@ -29,6 +29,7 @@ typedef enum {
     CHAIN_TYPE_WAIT_DELAY,       // Wait: fixed delay
     CHAIN_TYPE_WAIT_GPIO,        // Wait: GPIO pin state
     CHAIN_TYPE_WAIT_USB_RESET,   // Wait: USB reset
+    CHAIN_TYPE_WAIT_VBUS_CYCLE,  // Wait: VBUS power cycle (full device reset)
     CHAIN_TYPE_WAIT_BUTTON,      // Wait: user button click (via WebSocket)
     CHAIN_TYPE_WAIT_WEBHOOK,     // Wait: external webhook trigger
     CHAIN_TYPE_ACTION_COPY,      // Action: copy data between requests
@@ -37,6 +38,7 @@ typedef enum {
     CHAIN_TYPE_ACTION_GPIO_OUT,  // Action: set GPIO output level
     CHAIN_TYPE_ACTION_HTTP,      // Action: HTTP request
     CHAIN_TYPE_ACTION_CONFIG,    // Action: config toggle (auto-recovery, etc.)
+    CHAIN_TYPE_ACTION_ADD32,     // Action: add to 32-bit value across 4 entries' field (wValue/wIndex/wLength)
     CHAIN_TYPE_CONDITION,        // Conditional: compare and branch
 } chain_entry_type_t;
 
@@ -149,6 +151,13 @@ typedef struct __attribute__((packed)) {
             char key[16];
             char value[16];
         } config;
+
+        // Add32 action: add increment to 32-bit value across 4 entries
+        struct {
+            uint32_t increment;
+            uint8_t entryIdx[4];  // entry indices for bytes 0(LSB)-3(MSB)
+            uint8_t field;        // 0=wValue (default), 1=wIndex, 2=wLength
+        } add32;
         
         // Condition
         struct {

@@ -76,7 +76,8 @@ typedef struct {
         uint8_t endpoint;
         uint8_t device_addr;
         usb_endpoint_type_t ep_type;
-        uint8_t data_toggle;
+        uint8_t data_toggle;    // Used as channel number
+        int8_t data_pid;        // Data PID: 0=DATA0, 2=DATA1, -1=auto
         uint8_t *data;
         size_t len;
         uint32_t timeout_ms;
@@ -314,7 +315,8 @@ static void usb_worker_task(void *arg)
                         .buffer = s_pending_op.ep.data,
                         .max_len = s_pending_op.ep.len,
                         .timeout_ms = s_pending_op.ep.timeout_ms,
-                        .bytes_read = s_pending_op.ep.bytes_transferred
+                        .bytes_read = s_pending_op.ep.bytes_transferred,
+                        .data_pid = s_pending_op.ep.data_pid
                     };
                     result = dwc2_endpoint_in_impl(&params);
                 } else {
@@ -547,6 +549,31 @@ esp_err_t usb_backend_endpoint_in(
     s_pending_op.ep.device_addr = device_addr;
     s_pending_op.ep.ep_type = ep_type;
     s_pending_op.ep.data_toggle = data_toggle;
+    s_pending_op.ep.data_pid = -1;  // Default: auto (DATA0)
+    s_pending_op.ep.data = data;
+    s_pending_op.ep.len = max_len;
+    s_pending_op.ep.timeout_ms = timeout_ms;
+    s_pending_op.ep.bytes_transferred = bytes_received;
+    
+    return post_job_and_wait(USB_OP_ENDPOINT_IN, timeout_ms + 1000);
+}
+
+esp_err_t usb_backend_endpoint_in_with_pid(
+    uint8_t endpoint,
+    uint8_t device_addr,
+    usb_endpoint_type_t ep_type,
+    uint8_t channel,
+    int8_t data_pid,
+    uint8_t *data,
+    size_t max_len,
+    uint32_t timeout_ms,
+    size_t *bytes_received)
+{
+    s_pending_op.ep.endpoint = endpoint;
+    s_pending_op.ep.device_addr = device_addr;
+    s_pending_op.ep.ep_type = ep_type;
+    s_pending_op.ep.data_toggle = channel;
+    s_pending_op.ep.data_pid = data_pid;
     s_pending_op.ep.data = data;
     s_pending_op.ep.len = max_len;
     s_pending_op.ep.timeout_ms = timeout_ms;

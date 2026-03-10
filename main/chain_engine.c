@@ -42,6 +42,9 @@ static SemaphoreHandle_t webhook_semaphore = NULL;
 static chain_result_t stored_responses[MAX_STORED_RESPONSES];
 static int response_count = 0;
 
+// Per-endpoint DATA PID toggle tracker (0=DATA0, 2=DATA1)
+static int8_t ep_data_pid[16] = {0};
+
 // ============================================================================
 // USB Executor (runs on Core 1)
 // ============================================================================
@@ -160,10 +163,11 @@ static esp_err_t parse_csv_line_to_entry(char *line, chain_entry_t *entry) {
             if (strstr(fields[10], "setuponly")) entry->flags |= CHAIN_FLAG_SETUP_ONLY;
             const char *ep = strstr(fields[10], "ep");
             if (ep) entry->ctrl.dataStageEp = (uint8_t)atoi(ep + 2);
-            ESP_LOGI("CHAIN", "Parsed flags: 0x%02x (noretry=%d, setuponly=%d)", 
+            ESP_LOGI("CHAIN", "Parsed flags: 0x%02x (noretry=%d, setuponly=%d, dataStageEp=%d)", 
                      entry->flags,
                      (entry->flags & CHAIN_FLAG_NO_RETRY) ? 1 : 0,
-                     (entry->flags & CHAIN_FLAG_SETUP_ONLY) ? 1 : 0);
+                     (entry->flags & CHAIN_FLAG_SETUP_ONLY) ? 1 : 0,
+                     entry->ctrl.dataStageEp);
         }
         return ESP_OK;
     }
@@ -227,6 +231,10 @@ static esp_err_t parse_csv_line_to_entry(char *line, chain_entry_t *entry) {
         }
         if (strcmp(wait_type, "usb_reset") == 0) {
             entry->type = CHAIN_TYPE_WAIT_USB_RESET;
+            return ESP_OK;
+        }
+        if (strcmp(wait_type, "vbus_cycle") == 0) {
+            entry->type = CHAIN_TYPE_WAIT_VBUS_CYCLE;
             return ESP_OK;
         }
         if (strcmp(wait_type, "button") == 0) {
@@ -298,6 +306,34 @@ static esp_err_t parse_csv_line_to_entry(char *line, chain_entry_t *entry) {
             entry->type = CHAIN_TYPE_ACTION_CONFIG;
             strncpy(entry->config.key, fields[2], sizeof(entry->config.key) - 1);
             strncpy(entry->config.value, fields[3], sizeof(entry->config.value) - 1);
+            return ESP_OK;
+        }
+        // action,add32,<increment>,<entry_byte0>,<entry_byte1>,<entry_byte2>,<entry_byte3>[,<field>]
+        // Adds increment to 32-bit value formed by field of 4 entries (with carry)
+        // <field> is optional: wValue (default), wIndex, wLength
+        if (strcmp(action_type, "add32") == 0 && field_count >= 7) {
+            entry->type = CHAIN_TYPE_ACTION_ADD32;
+            entry->add32.increment = (uint32_t)parse_hex_or_dec(fields[2]);
+            entry->add32.entryIdx[0] = (uint8_t)parse_hex_or_dec(fields[3]);
+            entry->add32.entryIdx[1] = (uint8_t)parse_hex_or_dec(fields[4]);
+            entry->add32.entryIdx[2] = (uint8_t)parse_hex_or_dec(fields[5]);
+            entry->add32.entryIdx[3] = (uint8_t)parse_hex_or_dec(fields[6]);
+            // Parse optional field selector (default: wValue)
+            entry->add32.field = 0; // default wValue
+            if (field_count >= 8 && fields[7][0] != '\0') {
+                if (strcasecmp(fields[7], "wIndex") == 0) {
+                    entry->add32.field = 1;
+                } else if (strcasecmp(fields[7], "wLength") == 0) {
+                    entry->add32.field = 2;
+                }
+                // "wValue" or unrecognized stays 0
+            }
+            const char *field_names[] = {"wValue", "wIndex", "wLength"};
+            ESP_LOGI(TAG, "add32: increment=0x%lx, entries=[%d,%d,%d,%d], field=%s",
+                     (unsigned long)entry->add32.increment,
+                     entry->add32.entryIdx[0], entry->add32.entryIdx[1],
+                     entry->add32.entryIdx[2], entry->add32.entryIdx[3],
+                     field_names[entry->add32.field]);
             return ESP_OK;
         }
         return ESP_ERR_NOT_SUPPORTED;
@@ -497,10 +533,19 @@ static esp_err_t execute_entry(chain_entry_t *entry, chain_result_t *result) {
                 ep_type = USB_EP_TYPE_ISOCHRONOUS;
             }
             
-            // Unified API routes to correct backend (DWC2 or soft-host)
-            esp_err_t ret = usb_backend_endpoint_in(
+            // Auto data toggle: track per endpoint, alternate DATA0/DATA1
+            uint8_t ep = entry->ep.endpoint & 0x0F;
+            int8_t pid = ep_data_pid[ep];
+            
+            // Use new API with explicit data PID
+            esp_err_t ret = usb_backend_endpoint_in_with_pid(
                     entry->ep.endpoint, entry->ep.deviceAddr, ep_type, 1,
-                    result->data, len, timeout, &bytes_read);
+                    pid, result->data, len, timeout, &bytes_read);
+            
+            // Toggle PID for next read on this endpoint (DATA0↔DATA1)
+            if (ret == ESP_OK && bytes_read > 0) {
+                ep_data_pid[ep] = (pid == 0) ? 2 : 0;
+            }
             
             result->bytes_received = bytes_read;
             result->status = (ret == ESP_OK) ? 0 : 2;
@@ -557,6 +602,14 @@ static esp_err_t execute_entry(chain_entry_t *entry, chain_result_t *result) {
         case CHAIN_TYPE_WAIT_USB_RESET:
             usb_backend_reset();
             vTaskDelay(pdMS_TO_TICKS(100));
+            memset(ep_data_pid, 0, sizeof(ep_data_pid));  // Reset data toggle
+            result->status = 0;
+            return ESP_OK;
+        
+        case CHAIN_TYPE_WAIT_VBUS_CYCLE:
+            ESP_LOGI(TAG, "VBUS power cycle — full device reset");
+            dwc2_vbus_power_cycle_impl();
+            memset(ep_data_pid, 0, sizeof(ep_data_pid));  // Reset data toggle
             result->status = 0;
             return ESP_OK;
         
@@ -776,7 +829,48 @@ esp_err_t chain_execute_csv(const char *csv_data, size_t csv_len,
         }
         
         if (entry->type == CHAIN_TYPE_ACTION_GOTO) {
+            ESP_LOGI(TAG, "GOTO → entry %d", entry->jump.targetIndex);
             i = entry->jump.targetIndex;
+            continue;
+        }
+
+        if (entry->type == CHAIN_TYPE_ACTION_ADD32) {
+            // Helper to read the selected field from a control entry
+            #define ADD32_GET_FIELD(e, f) ((f) == 1 ? (e).ctrl.wIndex : (f) == 2 ? (e).ctrl.wLength : (e).ctrl.wValue)
+            #define ADD32_SET_FIELD(e, f, v) do { if ((f) == 1) (e).ctrl.wIndex = (v); else if ((f) == 2) (e).ctrl.wLength = (v); else (e).ctrl.wValue = (v); } while(0)
+            
+            uint8_t field = entry->add32.field;
+            // Read 32-bit value from 4 entries' selected field (little-endian)
+            uint32_t val = 0;
+            for (int b = 0; b < 4; b++) {
+                int idx = entry->add32.entryIdx[b];
+                if (idx < entry_count && entries[idx].type == CHAIN_TYPE_CONTROL) {
+                    val |= ((uint32_t)(ADD32_GET_FIELD(entries[idx], field) & 0xFF)) << (b * 8);
+                }
+            }
+            uint32_t old_val = val;
+            val += entry->add32.increment;
+            // Write back individual bytes
+            for (int b = 0; b < 4; b++) {
+                int idx = entry->add32.entryIdx[b];
+                if (idx < entry_count && entries[idx].type == CHAIN_TYPE_CONTROL) {
+                    ADD32_SET_FIELD(entries[idx], field, (val >> (b * 8)) & 0xFF);
+                }
+            }
+            const char *field_names[] = {"wValue", "wIndex", "wLength"};
+            ESP_LOGI(TAG, "ADD32 [%s]: 0x%08lx + 0x%lx = 0x%08lx",
+                     field_names[field],
+                     (unsigned long)old_val, (unsigned long)entry->add32.increment, (unsigned long)val);
+            
+            #undef ADD32_GET_FIELD
+            #undef ADD32_SET_FIELD
+            if (result_cb) {
+                memset(&result, 0, sizeof(result));
+                result.type = CHAIN_TYPE_ACTION_ADD32;
+                result.status = 0;
+                result_cb(i, &result, user_data);
+            }
+            i++;
             continue;
         }
 
