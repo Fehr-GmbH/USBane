@@ -704,6 +704,54 @@
                     </div>
                 </div>
                 
+                <!-- Quick Add Operation -->
+                <div style='background:#252525;padding:12px;border-radius:6px;margin-bottom:10px;border:1px solid #fd7e14;'>
+                    <div style='display:flex;gap:8px;align-items:flex-end;'>
+                        <div style='display:grid;grid-template-columns:repeat(7, 1fr) 80px 1fr;gap:8px;flex:1;'>
+                            <div style='grid-column:span 2;'>
+                                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Operation</label>
+                                <div style='display:flex;border:1px solid #555;border-radius:4px;overflow:hidden;'>
+                                    <div id='op_type_add32' onclick='selectOpType("add32")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#fd7e14;color:#fff;font-weight:bold;transition:all 0.2s;font-size:9px;'>ADD32</div>
+                                    <div id='op_type_sub32' onclick='selectOpType("sub32")' style='flex:1;padding:6px;text-align:center;cursor:pointer;background:#555;color:#ccc;font-weight:bold;transition:all 0.2s;font-size:9px;'>SUB32</div>
+                                </div>
+                            </div>
+                            <div id='op_fields' style='grid-column:span 7;display:flex;gap:8px;'>
+                                <!-- ADD32 fields (default) -->
+                                <div style='flex:0.5;'>
+                                    <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Increment</label>
+                                    <input type='text' id='op_add32_increment' value='0x40' placeholder='0x40' style='padding:6px;font-size:11px;width:100%;'>
+                                </div>
+                                <div style='flex:0.3;'>
+                                    <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Entry 0</label>
+                                    <input type='number' id='op_add32_e0' value='1' placeholder='1' style='padding:6px;font-size:11px;width:100%;'>
+                                </div>
+                                <div style='flex:0.3;'>
+                                    <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Entry 1</label>
+                                    <input type='number' id='op_add32_e1' value='2' placeholder='2' style='padding:6px;font-size:11px;width:100%;'>
+                                </div>
+                                <div style='flex:0.3;'>
+                                    <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Entry 2</label>
+                                    <input type='number' id='op_add32_e2' value='3' placeholder='3' style='padding:6px;font-size:11px;width:100%;'>
+                                </div>
+                                <div style='flex:0.3;'>
+                                    <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Entry 3</label>
+                                    <input type='number' id='op_add32_e3' value='4' placeholder='4' style='padding:6px;font-size:11px;width:100%;'>
+                                </div>
+                                <div style='flex:0.4;'>
+                                    <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Field</label>
+                                    <select id='op_add32_field' style='padding:6px;font-size:11px;width:100%;'>
+                                        <option value='0'>wValue</option>
+                                        <option value='1'>wIndex</option>
+                                        <option value='2'>wLength</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <button onclick='addQuickOp()' style='background:#fd7e14;margin:0;padding:8px 12px;font-size:11px;white-space:nowrap;height:29px;min-width:70px;'>+ Op</button>
+                        <input type='hidden' id='op_current_type' value='add32'>
+                    </div>
+                </div>
+                
                 <!-- Quick Add Condition -->
                 <div style='background:#252525;padding:12px;border-radius:6px;margin-bottom:10px;border:1px solid #6f42c1;'>
                     <div style='display:flex;gap:8px;align-items:flex-end;'>
@@ -1552,7 +1600,7 @@
                             <th onclick='sortTable(6)' style='padding:8px; border:1px solid #555; cursor:pointer; user-select:none;'>PktSize <span id='sort_6'></span></th>
                             <th onclick='sortTable(7)' style='padding:8px; border:1px solid #555; cursor:pointer; user-select:none;'>RxBytes <span id='sort_7'></span></th>
                             <th style='padding:8px; border:1px solid #555;'>Response (Hex)</th>
-                            <th style='padding:8px; border:1px solid #555;'>ASCII</th>
+                            <th style='padding:8px; border:1px solid #555;'>Status</th>
                         </tr>
                     </thead>
                     <tbody id='results_table'></tbody>

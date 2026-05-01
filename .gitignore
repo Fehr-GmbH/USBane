@@ -3,6 +3,13 @@ build/
 sdkconfig
 sdkconfig.old
 
+# IDF component manager — fetched at configure time from idf_component.yml.
+# managed_components/ is just a ~50MB cache of extracted tarballs (like
+# node_modules); it is regenerated on every fresh build, so don't commit it.
+# dependencies.lock IS committed for reproducible builds (locks the exact
+# resolved versions of cJSON/usb so CI doesn't drift on upstream patches).
+managed_components/
+
 # IDE
 .vscode/
 .idea/

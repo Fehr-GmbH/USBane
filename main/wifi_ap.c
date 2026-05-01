@@ -95,9 +95,9 @@ static void init_ap_mode(const char *ssid, const char *password)
         },
     };
     
-    strncpy((char *)wifi_config.ap.ssid, ssid, sizeof(wifi_config.ap.ssid) - 1);
+    snprintf((char *)wifi_config.ap.ssid, sizeof(wifi_config.ap.ssid), "%s", ssid);
     wifi_config.ap.ssid_len = strlen(ssid);
-    strncpy((char *)wifi_config.ap.password, password, sizeof(wifi_config.ap.password) - 1);
+    snprintf((char *)wifi_config.ap.password, sizeof(wifi_config.ap.password), "%s", password);
     
     // Allow open network if no password
     if (strlen(password) < 8) {
@@ -150,9 +150,9 @@ static void init_sta_mode(const char *ssid, const char *password)
             .pmf_cfg = { .required = false },
         },
     };
-    strncpy((char *)ap_config.ap.ssid, ap_ssid, sizeof(ap_config.ap.ssid) - 1);
+    snprintf((char *)ap_config.ap.ssid, sizeof(ap_config.ap.ssid), "%s", ap_ssid);
     ap_config.ap.ssid_len = strlen(ap_ssid);
-    strncpy((char *)ap_config.ap.password, ap_pass, sizeof(ap_config.ap.password) - 1);
+    snprintf((char *)ap_config.ap.password, sizeof(ap_config.ap.password), "%s", ap_pass);
     if (strlen(ap_pass) < 8) ap_config.ap.authmode = WIFI_AUTH_OPEN;
     
     // Configure STA
@@ -162,8 +162,8 @@ static void init_sta_mode(const char *ssid, const char *password)
             .sae_pwe_h2e = WPA3_SAE_PWE_BOTH,
         },
     };
-    strncpy((char *)sta_config.sta.ssid, ssid, sizeof(sta_config.sta.ssid) - 1);
-    strncpy((char *)sta_config.sta.password, password, sizeof(sta_config.sta.password) - 1);
+    snprintf((char *)sta_config.sta.ssid, sizeof(sta_config.sta.ssid), "%s", ssid);
+    snprintf((char *)sta_config.sta.password, sizeof(sta_config.sta.password), "%s", password);
     
     // Use APSTA mode so we can always access the device
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));

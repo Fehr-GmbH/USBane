@@ -737,13 +737,9 @@ esp_err_t dwc2_send_packet_impl(const usb_packet_config_t *config) {
     const char* size_status = config->packet_size == 8 ? "(standard)" : 
                               config->packet_size < 8 ? "(TRUNCATED!)" : "(OVERSIZED!)";
     
-    ESP_LOGI(TAG, "Sending USB packet:");
-    ESP_LOGI(TAG, "  bmRequestType: 0x%02x", config->bmRequestType);
-    ESP_LOGI(TAG, "  bRequest: 0x%02x", config->bRequest);
-    ESP_LOGI(TAG, "  wValue: 0x%04x", config->wValue);
-    ESP_LOGI(TAG, "  wIndex: 0x%04x", config->wIndex);
-    ESP_LOGI(TAG, "  wLength: %d (0x%04x)", config->wLength, config->wLength);
-    ESP_LOGI(TAG, "  Packet size: %d bytes %s", config->packet_size, size_status);
+    ESP_LOGD(TAG, "SETUP: bmRT=0x%02x bReq=0x%02x wVal=0x%04x wIdx=0x%04x wLen=%d pkt=%d%s",
+             config->bmRequestType, config->bRequest, config->wValue, config->wIndex,
+             config->wLength, config->packet_size, size_status);
     
     // Build packet buffer
     static uint8_t packet_buffer[USB_MAX_PACKET_SIZE] __attribute__((aligned(4)));
@@ -771,7 +767,7 @@ esp_err_t dwc2_send_packet_impl(const usb_packet_config_t *config) {
         memcpy(&packet_buffer[USB_SETUP_PACKET_SIZE], config->extra_data, extra_bytes);
     }
     
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, packet_buffer, config->packet_size, ESP_LOG_INFO);
+    ESP_LOG_BUFFER_HEX_LEVEL(TAG, packet_buffer, config->packet_size, ESP_LOG_DEBUG);
     
     // Configure USB host channel
     const int chan_num = 0;
@@ -833,7 +829,7 @@ esp_err_t dwc2_send_packet_impl(const usb_packet_config_t *config) {
         if (setup_hcint & USB_DWC_LL_INTR_CHAN_CHHLTD) {
             if (setup_hcint & USB_DWC_LL_INTR_CHAN_XFERCOMPL) {
                 setup_acked = true;
-                ESP_LOGI(TAG, "SETUP packet ACKed (hcint=0x%02lx)", setup_hcint);
+                ESP_LOGD(TAG, "SETUP ACKed (hcint=0x%02lx)", setup_hcint);
             } else {
                 ESP_LOGW(TAG, "SETUP failed (hcint=0x%02lx) XACTERR:%d NAK:%d STALL:%d",
                          setup_hcint,
@@ -853,17 +849,14 @@ esp_err_t dwc2_send_packet_impl(const usb_packet_config_t *config) {
     // If setup_only, return immediately after SETUP (skip DATA/STATUS stages)
     // Useful when the SETUP packet itself triggers the desired device behavior
     if (config->setup_only) {
-        ESP_LOGI(TAG, "setup_only mode: returning after SETUP (no DATA stage)");
+        ESP_LOGD(TAG, "setup_only: done");
         return ESP_OK;
     }
     
     // If data_stage_ep is specified, redirect DATA IN to a different endpoint
     // This allows reading from alternate endpoints after triggering a control transfer
     if (config->data_stage_ep > 0 && config->expect_response) {
-        ESP_LOGI(TAG, "Redirecting DATA IN to EP%d after EP0 trigger", config->data_stage_ep);
-        
-        // First, send an IN token to EP0 to trigger device state machine
-        ESP_LOGI(TAG, "Sending IN token to EP0 to advance device state...");
+        ESP_LOGD(TAG, "Redirect DATA IN to EP%d", config->data_stage_ep);
         
         // Quick DATA IN to EP0 - just to trigger the write, we don't care about the result
         uint8_t dummy_buffer[64];
@@ -874,19 +867,16 @@ esp_err_t dwc2_send_packet_impl(const usb_packet_config_t *config) {
                                                   1);  // Just 1 retry
         
         if (ep0_result == ESP_OK) {
-            ESP_LOGI(TAG, "EP0 DATA IN succeeded, received %zu bytes:", dummy_received);
-            if (dummy_received > 0) {
-                ESP_LOG_BUFFER_HEX_LEVEL(TAG, dummy_buffer, dummy_received > 16 ? 16 : dummy_received, ESP_LOG_INFO);
-            }
+            ESP_LOGD(TAG, "EP0 DATA IN: %zu bytes", dummy_received);
         } else {
-            ESP_LOGI(TAG, "EP0 DATA IN failed/NAK'd (expected for redirect mode)");
+            ESP_LOGD(TAG, "EP0 DATA IN: NAK (expected)");
         }
         
         // Short delay for device to process
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(2));
         
-        // Now read from the target endpoint (e.g., EP10) - single attempt only
-        ESP_LOGI(TAG, "Now reading from EP%d (single attempt)...", config->data_stage_ep);
+        // Now read from the target endpoint (e.g., EP10)
+        ESP_LOGD(TAG, "Reading EP%d...", config->data_stage_ep);
         
         // Read from the specified endpoint
         size_t ep_read_len = config->response_buffer_size > 0 ? config->response_buffer_size : 64;
@@ -1041,7 +1031,7 @@ esp_err_t usb_write_data(const uint8_t *data, size_t length, uint32_t timeout_ms
 esp_err_t usb_read_response(uint8_t *buffer, size_t max_len, 
                             uint32_t timeout_ms, size_t *bytes_read,
                             int max_nak_retries) {
-    ESP_LOGI(TAG, "Waiting for device response (timeout: %"PRIu32"ms)", timeout_ms);
+    ESP_LOGD(TAG, "Waiting for response (timeout: %"PRIu32"ms)", timeout_ms);
     
     const int chan_num = 0;
     volatile usb_dwc_host_chan_regs_t *chan_regs = &hal_context.dev->host_chans[chan_num];
@@ -1109,7 +1099,7 @@ esp_err_t usb_read_response(uint8_t *buffer, size_t max_len,
                 
                 if (*bytes_read > 0 && *bytes_read <= max_len) {
                     memcpy(buffer, rx_dma_buffer, *bytes_read);
-                    ESP_LOGI(TAG, "Received %d bytes", *bytes_read);
+                    ESP_LOGD(TAG, "Received %d bytes", *bytes_read);
                     consecutive_failures = 0;  // Reset failure counter on success
                     recovery_attempts = 0;     // Reset recovery attempts on success
                     return ESP_OK;
@@ -1417,9 +1407,7 @@ esp_err_t dwc2_endpoint_in_impl(const usb_endpoint_params_t *params) {
                     if (params->bytes_read) {
                         *params->bytes_read = received;
                     }
-                    ESP_LOGI(TAG, "EP%d IN: Received %zu bytes", params->endpoint, received);
-                    ESP_LOG_BUFFER_HEX_LEVEL(TAG, params->buffer,
-                                             received > 64 ? 64 : received, ESP_LOG_INFO);
+                    ESP_LOGD(TAG, "EP%d IN: %zu bytes", params->endpoint, received);
                     return ESP_OK;
                 }
             }

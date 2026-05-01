@@ -165,7 +165,7 @@ void usbMess(uint8_t src, uint8_t len, uint8_t *data);
 // USB Descriptor Structures
 // ============================================================================
 
-typedef __packed struct {
+typedef struct __packed {
     uint8_t bLength;
     uint8_t bDescriptorType;
     uint16_t bcdUSB;
@@ -182,7 +182,7 @@ typedef __packed struct {
     uint8_t bNumConfigurations;
 } sDevDesc;
 
-typedef __packed struct {
+typedef struct __packed {
     uint8_t bLength;
     uint8_t bType;
     uint16_t wLength;
@@ -193,7 +193,7 @@ typedef __packed struct {
     uint8_t bMaxPower;
 } sCfgDesc;
 
-typedef __packed struct {
+typedef struct __packed {
     uint8_t bLength;
     uint8_t bType;
     uint8_t iNum;
@@ -205,7 +205,7 @@ typedef __packed struct {
     uint8_t iIndex;
 } sIntfDesc;
 
-typedef __packed struct {
+typedef struct __packed {
     uint8_t bLength;
     uint8_t bType;
     uint8_t bEPAdd;
@@ -214,7 +214,7 @@ typedef __packed struct {
     uint8_t bInterval;
 } sEPDesc;
 
-typedef __packed struct {
+typedef struct __packed {
     uint8_t bLength;
     uint8_t bDescriptorType;
     uint16_t bcdHID;
@@ -225,7 +225,7 @@ typedef __packed struct {
     uint8_t wItemLengthH;
 } HIDDescriptor;
 
-typedef __packed struct {
+typedef struct __packed {
     uint8_t bLength;
     uint8_t bType;
     uint16_t wLang;

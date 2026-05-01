@@ -712,6 +712,13 @@ function selectWaitType(type) {
         `;
     } else if (type === 'usb_reset') {
         fieldsDiv.innerHTML = `
+            <div style='flex:1;max-width:150px;'>
+                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Reset Type</label>
+                <select id='wait_reset_type' style='padding:6px;font-size:11px;width:100%;'>
+                    <option value='usb_reset'>USB Reset (bus only)</option>
+                    <option value='vbus_cycle'>VBUS Cycle (full power)</option>
+                </select>
+            </div>
             <div style='flex:1;'>
                 <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Note</label>
                 <input type='text' id='wait_reset_note' value='USB Reset' placeholder='Optional note' style='padding:6px;font-size:11px;width:100%;'>
@@ -872,9 +879,10 @@ function addQuickWait() {
             timeout: 60
         };
     } else if (type === 'usb_reset') {
+        const resetType = document.getElementById('wait_reset_type').value;
         wait = {
             type: 'waitfor',
-            waitType: 'usb_reset',
+            waitType: resetType,
             note: document.getElementById('wait_reset_note').value
         };
     } else if (type === 'delay') {
@@ -950,6 +958,145 @@ function addQuickAction() {
     btn.style.background = '#17a2b8';
     setTimeout(() => {
         btn.innerText = origText;
+    }, 500);
+}
+
+function selectOpType(type) {
+    document.getElementById('op_current_type').value = type;
+    
+    // Update toggle visuals - all use orange (#fd7e14) for operation area
+    ['add32', 'sub32'].forEach(t => {
+        const elem = document.getElementById('op_type_' + t);
+        if (t === type) {
+            elem.style.background = '#fd7e14';
+            elem.style.color = '#fff';
+            elem.style.fontWeight = 'bold';
+        } else {
+            elem.style.background = '#333';
+            elem.style.color = '#888';
+            elem.style.fontWeight = 'normal';
+        }
+    });
+    
+    // Update fields based on type
+    const fieldsDiv = document.getElementById('op_fields');
+    if (type === 'add32') {
+        fieldsDiv.innerHTML = `
+            <div style='flex:0.5;'>
+                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Increment</label>
+                <input type='text' id='op_add32_increment' value='0x40' placeholder='0x40' style='padding:6px;font-size:11px;width:100%;'>
+            </div>
+            <div style='flex:0.3;'>
+                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Entry 0</label>
+                <input type='number' id='op_add32_e0' value='1' placeholder='1' style='padding:6px;font-size:11px;width:100%;'>
+            </div>
+            <div style='flex:0.3;'>
+                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Entry 1</label>
+                <input type='number' id='op_add32_e1' value='2' placeholder='2' style='padding:6px;font-size:11px;width:100%;'>
+            </div>
+            <div style='flex:0.3;'>
+                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Entry 2</label>
+                <input type='number' id='op_add32_e2' value='3' placeholder='3' style='padding:6px;font-size:11px;width:100%;'>
+            </div>
+            <div style='flex:0.3;'>
+                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Entry 3</label>
+                <input type='number' id='op_add32_e3' value='4' placeholder='4' style='padding:6px;font-size:11px;width:100%;'>
+            </div>
+            <div style='flex:0.4;'>
+                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Field</label>
+                <select id='op_add32_field' style='padding:6px;font-size:11px;width:100%;'>
+                    <option value='0'>wValue</option>
+                    <option value='1'>wIndex</option>
+                    <option value='2'>wLength</option>
+                </select>
+            </div>
+        `;
+    } else if (type === 'sub32') {
+        fieldsDiv.innerHTML = `
+            <div style='flex:0.5;'>
+                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Decrement</label>
+                <input type='text' id='op_sub32_decrement' value='0x40' placeholder='0x40' style='padding:6px;font-size:11px;width:100%;'>
+            </div>
+            <div style='flex:0.3;'>
+                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Entry 0</label>
+                <input type='number' id='op_sub32_e0' value='1' placeholder='1' style='padding:6px;font-size:11px;width:100%;'>
+            </div>
+            <div style='flex:0.3;'>
+                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Entry 1</label>
+                <input type='number' id='op_sub32_e1' value='2' placeholder='2' style='padding:6px;font-size:11px;width:100%;'>
+            </div>
+            <div style='flex:0.3;'>
+                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Entry 2</label>
+                <input type='number' id='op_sub32_e2' value='3' placeholder='3' style='padding:6px;font-size:11px;width:100%;'>
+            </div>
+            <div style='flex:0.3;'>
+                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Entry 3</label>
+                <input type='number' id='op_sub32_e3' value='4' placeholder='4' style='padding:6px;font-size:11px;width:100%;'>
+            </div>
+            <div style='flex:0.4;'>
+                <label style='display:block;font-size:9px;color:#888;margin-bottom:3px;'>Field</label>
+                <select id='op_sub32_field' style='padding:6px;font-size:11px;width:100%;'>
+                    <option value='0'>wValue</option>
+                    <option value='1'>wIndex</option>
+                    <option value='2'>wLength</option>
+                </select>
+            </div>
+        `;
+    }
+}
+
+function addQuickOp() {
+    const type = document.getElementById('op_current_type').value;
+    let op = {};
+    
+    if (type === 'add32') {
+        let incStr = document.getElementById('op_add32_increment').value.trim();
+        // Keep as hex string for display consistency
+        let incHex = incStr.startsWith('0x') ? incStr : '0x' + parseInt(incStr).toString(16);
+        let fieldVal = parseInt(document.getElementById('op_add32_field').value) || 0;
+        let fieldName = ['wValue', 'wIndex', 'wLength'][fieldVal] || 'wValue';
+        op = {
+            type: 'action',
+            actionType: 'add32',
+            add32Increment: incHex,
+            add32Entries: [
+                document.getElementById('op_add32_e0').value,
+                document.getElementById('op_add32_e1').value,
+                document.getElementById('op_add32_e2').value,
+                document.getElementById('op_add32_e3').value
+            ],
+            add32Field: fieldName
+        };
+    } else if (type === 'sub32') {
+        let decStr = document.getElementById('op_sub32_decrement').value.trim();
+        let decHex = decStr.startsWith('0x') ? decStr : '0x' + parseInt(decStr).toString(16);
+        let fieldVal = parseInt(document.getElementById('op_sub32_field').value) || 0;
+        let fieldName = ['wValue', 'wIndex', 'wLength'][fieldVal] || 'wValue';
+        op = {
+            type: 'action',
+            actionType: 'sub32',
+            sub32Decrement: decHex,
+            sub32Entries: [
+                document.getElementById('op_sub32_e0').value,
+                document.getElementById('op_sub32_e1').value,
+                document.getElementById('op_sub32_e2').value,
+                document.getElementById('op_sub32_e3').value
+            ],
+            sub32Field: fieldName
+        };
+    }
+    
+    chainRequests.push(op);
+    renderChain();
+    
+    // Visual feedback
+    const btn = event.target;
+    const origText = btn.innerText;
+    btn.innerText = '✓';
+    btn.style.background = '#28a745';
+    setTimeout(() => {
+        btn.innerText = origText;
+        btn.style.background = '#fd7e14';
     }, 500);
 }
 
@@ -1153,9 +1300,15 @@ function renderChain() {
                 actionLabel = 'GOTO';
                 configInfo = 'Jump to index ' + (req.gotoReqNo || 0);
             } else if (req.actionType === 'add32') {
+                bgColor = '#fd7e14'; // Orange for operations
                 actionLabel = 'ADD32';
                 var fieldName = req.add32Field || 'wValue';
                 configInfo = '+' + (req.add32Increment || '0x40') + ' → ' + fieldName + ' of entries [' + (req.add32Entries || []).join(',') + ']';
+            } else if (req.actionType === 'sub32') {
+                bgColor = '#fd7e14'; // Orange for operations
+                actionLabel = 'SUB32';
+                var fieldNameSub = req.sub32Field || 'wValue';
+                configInfo = '-' + (req.sub32Decrement || '0x40') + ' → ' + fieldNameSub + ' of entries [' + (req.sub32Entries || []).join(',') + ']';
             } else {
                 actionLabel = 'ACTION';
                 configInfo = 'Unknown';
@@ -1335,10 +1488,14 @@ function editWaitforConfig(index, cell) {
             req.duration = duration;
             renderChain();
         }
-    } else if (req.waitType === 'usb_reset') {
-        const newNote = prompt('Enter note (optional):', req.note || 'USB Reset');
-        if (newNote !== null) {
-            req.note = newNote;
+    } else if (req.waitType === 'usb_reset' || req.waitType === 'vbus_cycle') {
+        const newType = prompt('Enter reset type (usb_reset or vbus_cycle):', req.waitType);
+        if (newType !== null && (newType === 'usb_reset' || newType === 'vbus_cycle')) {
+            req.waitType = newType;
+            const newNote = prompt('Enter note (optional):', req.note || (newType === 'vbus_cycle' ? 'VBUS Cycle' : 'USB Reset'));
+            if (newNote !== null) {
+                req.note = newNote;
+            }
             renderChain();
         }
     }
@@ -1608,6 +1765,9 @@ function buildChainCSV() {
             } else if (req.actionType === 'add32') {
                 var fieldPart = (req.add32Field && req.add32Field !== 'wValue') ? ',' + req.add32Field : '';
                 csv += 'action,add32,' + (req.add32Increment || '0x40') + ',' + (req.add32Entries || [0,0,0,0]).join(',') + fieldPart + '\n';
+            } else if (req.actionType === 'sub32') {
+                var fieldPartSub = (req.sub32Field && req.sub32Field !== 'wValue') ? ',' + req.sub32Field : '';
+                csv += 'action,sub32,' + (req.sub32Decrement || '0x40') + ',' + (req.sub32Entries || [0,0,0,0]).join(',') + fieldPartSub + '\n';
             }
         } else if (actionType === 'condition') {
             csv += 'condition,' + (req.operator || '==') + ',' + 
@@ -1733,7 +1893,8 @@ function executeChainNative() {
                 17: 'action',       // ACTION_HTTP
                 18: 'config',       // ACTION_CONFIG
                 19: 'action',       // ACTION_ADD32
-                20: 'condition'     // CONDITION
+                20: 'action',       // ACTION_SUB32
+                21: 'condition'     // CONDITION (shifted by SUB32 insertion)
             };
             if (msg.t === 17) {
                 // config action inserted by UI; don't render a row
@@ -1889,6 +2050,9 @@ function exportChainCSV() {
             } else if (req.actionType === 'add32') {
                 var fieldPart2 = (req.add32Field && req.add32Field !== 'wValue') ? ',' + req.add32Field : '';
                 csv += 'action,add32,' + (req.add32Increment || '0x40') + ',' + (req.add32Entries || [0,0,0,0]).join(',') + fieldPart2 + '\n';
+            } else if (req.actionType === 'sub32') {
+                var fieldPartSub2 = (req.sub32Field && req.sub32Field !== 'wValue') ? ',' + req.sub32Field : '';
+                csv += 'action,sub32,' + (req.sub32Decrement || '0x40') + ',' + (req.sub32Entries || [0,0,0,0]).join(',') + fieldPartSub2 + '\n';
             }
         } else if (actionType === 'condition') {
             const op = req.operator || '==';
@@ -2080,6 +2244,17 @@ function handleChainFileImport(event) {
                         add32Increment: parts[2] || '0x40',
                         add32Entries: [parts[3], parts[4], parts[5], parts[6]],
                         add32Field: add32Field
+                    });
+                    imported++;
+                } else if (subType === 'sub32' && parts.length >= 7) {
+                    // Format: action,sub32,decrement,e0,e1,e2,e3[,field]
+                    var sub32Field = (parts.length >= 8 && parts[7]) ? parts[7].trim() : 'wValue';
+                    chainRequests.push({
+                        type: 'action',
+                        actionType: 'sub32',
+                        sub32Decrement: parts[2] || '0x40',
+                        sub32Entries: [parts[3], parts[4], parts[5], parts[6]],
+                        sub32Field: sub32Field
                     });
                     imported++;
                 }
@@ -2280,12 +2455,24 @@ function addTableRow(bmReqType, bReq, wVal, wIdx, wLen, pktSize, rxBytes, respHe
     onNewRow();
 }
 
+// Convert hex string to ASCII (printable chars, '.' for non-printable)
+function hexToAscii(hex) {
+    let ascii = '';
+    for (let i = 0; i < hex.length; i += 2) {
+        const byte = parseInt(hex.substr(i, 2), 16);
+        ascii += (byte >= 32 && byte < 127) ? String.fromCharCode(byte) : '.';
+    }
+    return ascii;
+}
+
 // Show full response data in a modal
 function showFullResponse(row) {
     let hex = row.dataset.resphex || '';
-    let ascii = row.dataset.ascii || '';
     
-    if (!hex && !ascii) return;
+    if (!hex) return;
+    
+    // Convert hex to ASCII for display
+    let ascii = hexToAscii(hex);
     
     // Create or get modal
     let modal = document.getElementById('responseModal');
@@ -2297,7 +2484,7 @@ function showFullResponse(row) {
             <div style="background:#1a1a1a;border:1px solid #555;border-radius:8px;padding:20px;max-width:90%;max-height:80%;overflow:auto;">
                 <h3 style="margin-top:0;color:#fff;">Response Data</h3>
                 <div style="margin-bottom:10px;">
-                    <label style="color:#aaa;">Hex (${hex.length/2} bytes):</label>
+                    <label id="modalHexLabel" style="color:#aaa;">Hex:</label>
                     <textarea id="modalHex" readonly style="width:100%;height:150px;background:#0a0a0a;color:#4da6ff;border:1px solid #444;font-family:monospace;font-size:12px;padding:8px;margin-top:4px;"></textarea>
                 </div>
                 <div style="margin-bottom:15px;">
@@ -2322,7 +2509,7 @@ function showFullResponse(row) {
     
     document.getElementById('modalHex').value = formattedHex;
     document.getElementById('modalAscii').value = ascii;
-    modal.querySelector('label').textContent = 'Hex (' + (hex.length/2) + ' bytes):';
+    document.getElementById('modalHexLabel').textContent = 'Hex (' + (hex.length/2) + ' bytes):';
     modal.style.display = 'flex';
 }
 
@@ -3504,13 +3691,7 @@ async function startBruteforce() {
                     document.getElementById('bf_progress').innerText = 'Request ' + bf_count;
                     
                     // Convert hex to ASCII
-                    let ascii = '';
-                    if (data.d) {
-                        for (let i = 0; i < data.d.length; i += 2) {
-                            const byte = parseInt(data.d.substr(i, 2), 16);
-                            ascii += (byte >= 32 && byte < 127) ? String.fromCharCode(byte) : '.';
-                        }
-                    }
+                    let ascii = data.d ? hexToAscii(data.d) : '';
                     
                     // Format USB params for display
                     const bmRT = data.bmRT !== undefined ? '0x' + data.bmRT.toString(16).padStart(2, '0') : '';

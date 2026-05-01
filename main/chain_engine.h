@@ -39,6 +39,7 @@ typedef enum {
     CHAIN_TYPE_ACTION_HTTP,      // Action: HTTP request
     CHAIN_TYPE_ACTION_CONFIG,    // Action: config toggle (auto-recovery, etc.)
     CHAIN_TYPE_ACTION_ADD32,     // Action: add to 32-bit value across 4 entries' field (wValue/wIndex/wLength)
+    CHAIN_TYPE_ACTION_SUB32,     // Action: subtract from 32-bit value across 4 entries' field
     CHAIN_TYPE_CONDITION,        // Conditional: compare and branch
 } chain_entry_type_t;
 

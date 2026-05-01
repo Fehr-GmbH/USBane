@@ -1,0 +1,6 @@
+## IDF Component Manager Manifest
+## ESP-IDF v6.0 moved several components out of the core IDF and into the
+## component registry. Re-add them here so the manager fetches them.
+dependencies:
+  espressif/cjson: "^1.7.19"
+  espressif/usb: "^1.0.0"

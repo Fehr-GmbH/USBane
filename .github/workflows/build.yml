@@ -37,15 +37,22 @@ jobs:
     - name: Build with ESP-IDF
       uses: espressif/esp-idf-ci-action@v1
       with:
-        esp_idf_version: v5.5.1
+        # ESP-IDF v6.0 split several previously-bundled components (cJSON,
+        # usb host stack, etc.) into the component registry.  We declare
+        # those in main/idf_component.yml and the IDF component manager
+        # fetches them at configure time.  Use the latest v6.0 patch.
+        esp_idf_version: v6.0.1
         target: esp32s3
         path: '.'
 
     - name: Create merged binary
       run: |
         pip install esptool
+        # Single-shot flashable image for 4 MiB (and any larger) ESP32-S3.
+        # Note the otadata offset is 0xf000 to match the custom partition
+        # table in ./partitions.csv.
         python -m esptool --chip esp32s3 merge-bin -o usbane-full.bin \
-          --flash-mode dio --flash-size 8MB --flash-freq 80m \
+          --flash-mode dio --flash-size 4MB --flash-freq 80m \
           0x0 build/bootloader/bootloader.bin \
           0x8000 build/partition_table/partition-table.bin \
           0xf000 build/ota_data_initial.bin \

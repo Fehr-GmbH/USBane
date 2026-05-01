@@ -80,12 +80,10 @@ static uint32_t dedic_in_mask = 0;
 #define DEDIC_SET_DM()  __asm__ __volatile__("ee.set_bit_gpio_out 0x2")  // Set D- HIGH (bit 1)
 #define DEDIC_CLR_DM()  __asm__ __volatile__("ee.clr_bit_gpio_out 0x2")  // Clear D- LOW (bit 1)
 
-// SE1 avoidance macro - DISABLED for 12 MHz timing
-// The GPIO fall time is slower than rise time, causing SE1 glitches during transitions.
-// Adding delay (NOPs) reduces SE1 but slows bit rate below USB spec.
-// See LIMITATIONS.md for details on the SE1 glitch issue.
-// Current state: Direct writes for correct 12 MHz timing, SE1 glitches present
-#define DEDIC_TRANSITION_VIA_SE0(target) dedic_gpio_cpu_ll_write_all(target)
+// SE1 glitches during J↔K transitions are a hardware-edge-asymmetry problem,
+// not a software-timing one — software-side mitigation (intermediate SE0) costs
+// cycles we don't have at 20 cyc/bit and creates spurious EOP markers anyway.
+// The fix lives in initStates() (lowest drive strength, optional open-drain).
 
 #define T_START 	0b00000001
 #define T_ACK   	0b01001011
@@ -193,7 +191,7 @@ volatile uint8_t decoded_receive_buffer_tail;
 uint8_t decoded_receive_buffer[DEF_BUFF_SIZE];
 
 
-typedef __packed struct
+typedef struct __packed
 {
 	uint8_t cmd;
 	uint8_t addr;
@@ -427,13 +425,18 @@ void repack()
 		transmit_NRZI_buffer[transmit_NRZI_buffer_cnt++] = last;
 	}
 
+	// USB 2.0 EOP: 2 bit-times of SE0 followed by 1 bit-time of driven J
+	// (the receiver uses the SE0→J transition to mark end-of-packet).
 	transmit_NRZI_buffer[transmit_NRZI_buffer_cnt++] = USB_LS_S;  // SE0 #1
 	transmit_NRZI_buffer[transmit_NRZI_buffer_cnt++] = USB_LS_S;  // SE0 #2
-	// Inter-packet idle: 10 J bits (matching Propeller reference)
-	// Propeller uses delayAfter=10 between SETUP token and DATA0
-	for (int i = 0; i < 10; i++) {
-		transmit_NRZI_buffer[transmit_NRZI_buffer_cnt++] = USB_LS_J;
-	}
+	// Inter-packet gap (host→host within one transaction): keep it short.
+	// USB 2.0 §7.1.18.2 caps host turnaround at ~6.5 bit times for FS, so
+	// SE0+SE0+J+J leaves a ~4 bit-time IPG between packets — comfortably
+	// within spec yet long enough for clean SE0→J recovery.  The trim in
+	// sendRecieveNParse() drops one of these for the very last packet,
+	// yielding the textbook 2×SE0 + 1×J EOP at the end of the burst.
+	transmit_NRZI_buffer[transmit_NRZI_buffer_cnt++] = USB_LS_J;
+	transmit_NRZI_buffer[transmit_NRZI_buffer_cnt++] = USB_LS_J;
 
 	transmit_bits_buffer_store_cnt = 0;
 }
@@ -557,6 +560,55 @@ int parse_received_NRZI_buffer()
 // Full-Speed TX + RX (combined critical section)
 // ============================================================================
 
+// Pre-computed dedicated GPIO output values for the NRZI buffer.
+// Filled by fs_precompute_tx_dedic() *before* the critical section, so the
+// timing-critical TX loop can do a single 32-bit load + WUR per bit.
+static uint32_t fs_tx_dedic_buf[DEF_BUFF_SIZE];
+
+// Map a USB_LS_* state to a dedicated-GPIO bundle value once, up front.
+static inline void fs_precompute_tx_dedic(const uint8_t *src, int count)
+{
+	static const uint32_t dedic_lookup[4] = {DEDIC_K, DEDIC_J, DEDIC_SE0, DEDIC_SE0};
+	for (int i = 0; i < count; i++) {
+		fs_tx_dedic_buf[i] = dedic_lookup[src[i] & 3];
+	}
+}
+
+// Drive the bus with `count` pre-computed dedic values at FS_CYCLES_PER_BIT
+// cycles per bit.  Must be called with interrupts disabled.  Returns the
+// CPU cycle count just before the first write and just after the last.
+//
+// Loop body (after compile): wait → wur → addi → bne.  This tight pattern
+// fits in well under 20 cycles, leaving the wait loop room to gate at the
+// exact 12 MHz bit clock.
+static inline void __attribute__((always_inline)) IRAM_ATTR
+fs_tx_critical(int count, uint32_t *tx_start_out, uint32_t *tx_end_out)
+{
+	register uint32_t *tx_ptr = fs_tx_dedic_buf;
+	register uint32_t *tx_end_ptr = fs_tx_dedic_buf + count;
+	register uint32_t start = esp_cpu_get_cycle_count();
+	register uint32_t next_edge = start + FS_CYCLES_PER_BIT;
+	
+	while (tx_ptr < tx_end_ptr) {
+		while ((int32_t)(next_edge - esp_cpu_get_cycle_count()) > 0) {}
+		dedic_gpio_cpu_ll_write_all(*tx_ptr++);
+		next_edge += FS_CYCLES_PER_BIT;
+	}
+	
+	if (tx_start_out) *tx_start_out = start;
+	if (tx_end_out)   *tx_end_out   = esp_cpu_get_cycle_count();
+}
+
+// Drive J idle for `cycles` CPU cycles before starting TX.  Gives the receiver
+// an unambiguous idle reference and the output driver time to settle after
+// SET_O before the first SYNC bit is emitted.
+static inline void __attribute__((always_inline)) IRAM_ATTR
+fs_drive_j_for(uint32_t cycles)
+{
+	register uint32_t deadline = esp_cpu_get_cycle_count() + cycles;
+	while ((int32_t)(deadline - esp_cpu_get_cycle_count()) > 0) {}
+}
+
 // Full-Speed sendOnly: transmit the NRZI buffer without waiting for a response.
 // Used by ACK() and CB_8 status-stage packets.
 void IRAM_ATTR sendOnly()
@@ -566,45 +618,17 @@ void IRAM_ATTR sendOnly()
 		return;
 	}
 	
-	// Map USB_LS_* to dedicated GPIO values
-	static const uint8_t dedic_map[4] = {DEDIC_K, DEDIC_J, DEDIC_SE0, DEDIC_SE0};
+	int count = transmit_NRZI_buffer_cnt;
+	fs_precompute_tx_dedic(transmit_NRZI_buffer, count);
 	
-	// Write J BEFORE enabling output to avoid glitch on driver activation
+	// Drive J idle BEFORE enabling the output driver so the driver activation
+	// edge happens with both pins already at their J levels (no glitch).
 	dedic_gpio_cpu_ll_write_all(DEDIC_J);
 	SET_O;
-	// J idle preamble (~2 bit times) before TX
-	__asm__ __volatile__(
-		"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
-		"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
-		"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
-		"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop"
-	);
 	
-	// TX using INTERLEAVED writes to avoid SE1 glitches
 	uint32_t irq_state = XTOS_DISABLE_ALL_INTERRUPTS;
-	{
-		register uint8_t *tx_ptr = transmit_NRZI_buffer;
-		register uint8_t *tx_end_ptr = transmit_NRZI_buffer + transmit_NRZI_buffer_cnt;
-		register uint32_t next_edge = esp_cpu_get_cycle_count() + FS_CYCLES_PER_BIT;
-		register uint8_t prev_state = DEDIC_J;  // Bus was at J idle
-		
-		while (tx_ptr < tx_end_ptr) {
-			register uint8_t new_state = dedic_map[*tx_ptr++];
-			
-			// Transition via SE0 to avoid SE1 glitches
-			// GPIO fall time > rise time causes SE1 during J<->K
-			if ((prev_state == DEDIC_J && new_state == DEDIC_K) ||
-			    (prev_state == DEDIC_K && new_state == DEDIC_J)) {
-				DEDIC_TRANSITION_VIA_SE0(new_state);
-			} else {
-				dedic_gpio_cpu_ll_write_all(new_state);
-			}
-			prev_state = new_state;
-			
-			while ((int32_t)(next_edge - esp_cpu_get_cycle_count()) > 0) {}
-			next_edge += FS_CYCLES_PER_BIT;
-		}
-	}
+	fs_drive_j_for(FS_CYCLES_PER_BIT * 2);  // ~2 bit times of clean J idle
+	fs_tx_critical(count, NULL, NULL);
 	XTOS_RESTORE_INTLEVEL(irq_state);
 	
 	restart();
@@ -652,89 +676,47 @@ void IRAM_ATTR sendRecieveNParse()
 		transmit_NRZI_buffer_cnt--;
 	}
 	
-	// Save TX info for debug (before critical section)
 	int total_tx_bits = transmit_NRZI_buffer_cnt;
-	int saved_tx_len = transmit_NRZI_buffer_cnt > 200 ? 200 : transmit_NRZI_buffer_cnt;
+	int saved_tx_len = total_tx_bits > 200 ? 200 : total_tx_bits;
 	uint8_t saved_tx[200];
 	for (int i = 0; i < saved_tx_len; i++) {
 		saved_tx[i] = transmit_NRZI_buffer[i];
 	}
 	
-	// Map USB_LS_* to dedicated GPIO values: channel 0 = D+, channel 1 = D-
-	// USB_LS_K (0) -> D+=0, D-=1 -> 0b10 (DEDIC_K)
-	// USB_LS_J (1) -> D+=1, D-=0 -> 0b01 (DEDIC_J)
-	// USB_LS_S (2) -> D+=0, D-=0 -> 0b00 (DEDIC_SE0)
-	static const uint8_t dedic_map[4] = {DEDIC_K, DEDIC_J, DEDIC_SE0, DEDIC_SE0};
+	fs_precompute_tx_dedic(transmit_NRZI_buffer, total_tx_bits);
 	
-	// Enable output and drive J idle before TX
-	// USB spec requires the bus to be at J idle before starting a packet.
-	// Write J BEFORE enabling output so there's no glitch when output driver activates
+	// USB spec: bus must be at J idle before starting a packet.  Write J BEFORE
+	// enabling the output driver so the driver-activation edge isn't a glitch.
 	dedic_gpio_cpu_ll_write_all(DEDIC_J);
 	SET_O;
-	// ~2 bit times of J idle (40 NOPs = ~40 cycles = ~166ns at 240MHz)
-	__asm__ __volatile__(
-		"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
-		"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
-		"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
-		"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop"
-	);
 	
-	// Pre-enable input for RX phase (before critical section)
+	// Pre-arm input mux for the upcoming RX phase (cheap, can be done now)
 	PIN_INPUT_ENABLE(GPIO_PIN_MUX_REG[DP_PIN]);
 	PIN_INPUT_ENABLE(GPIO_PIN_MUX_REG[DM_PIN]);
 	
-	// TX/RX timing variables
 	uint32_t tx_start, tx_end, rx_start;
-	
 	uint32_t irq_state = XTOS_DISABLE_ALL_INTERRUPTS;
 	
-	// --- TX Phase using FAST SET/CLEAR instructions ---
-	// For J<->K transitions, use dedicated set_bit/clr_bit instructions:
-	//   J->K: D+ goes HIGH->LOW, D- goes LOW->HIGH
-	//         First CLEAR D+ (so D+ falls), then SET D- (so D- rises)
-	//         This ensures D+ is LOW before D- goes HIGH, avoiding SE1
-	//   K->J: D+ goes LOW->HIGH, D- goes HIGH->LOW  
-	//         First CLEAR D- (so D- falls), then SET D+ (so D+ rises)
-	//         This ensures D- is LOW before D+ goes HIGH, avoiding SE1
-	// The set/clear instructions are the fastest way to toggle GPIOs on ESP32-S3
-	tx_start = esp_cpu_get_cycle_count();
-	{
-		register uint8_t *tx_ptr = transmit_NRZI_buffer;
-		register uint8_t *tx_end_ptr = transmit_NRZI_buffer + transmit_NRZI_buffer_cnt;
-		register uint32_t next_edge = tx_start + FS_CYCLES_PER_BIT;
-		register uint8_t prev_state = DEDIC_J;  // Bus was at J idle
-		
-		while (tx_ptr < tx_end_ptr) {
-			register uint8_t new_state = dedic_map[*tx_ptr++];
-			
-			// Transition via SE0 to avoid SE1 glitches
-			if ((prev_state == DEDIC_J && new_state == DEDIC_K) ||
-			    (prev_state == DEDIC_K && new_state == DEDIC_J)) {
-				DEDIC_TRANSITION_VIA_SE0(new_state);
-			} else {
-				dedic_gpio_cpu_ll_write_all(new_state);
-			}
-			prev_state = new_state;
-			
-			while ((int32_t)(next_edge - esp_cpu_get_cycle_count()) > 0) {}
-			next_edge += FS_CYCLES_PER_BIT;
-		}
-	}
-	tx_end = esp_cpu_get_cycle_count();
+	// ── TX phase ─────────────────────────────────────────────────────────
+	fs_drive_j_for(FS_CYCLES_PER_BIT * 2);
+	fs_tx_critical(total_tx_bits, &tx_start, &tx_end);
 	
-	// --- Switch to RX ---
-	// 1. Write SE0 to dedicated GPIO to stop driving
-	// 2. Disable regular GPIO output driver
-	dedic_gpio_cpu_ll_write_all(DEDIC_SE0);
+	// ── TX → RX turnaround ───────────────────────────────────────────────
+	// Last buffered state is the J of EOP recovery, so the bus is already
+	// at idle.  Just release the output driver — do NOT write SE0 again
+	// (that would look like the start of a second EOP and the device may
+	// abort instead of replying).  The 1.5 kΩ pull-up on D+ keeps J idle
+	// while we wait for the device's response.
 	GPIO.enable_w1tc = (DP_PIN_M | DM_PIN_M);
 	rx_start = esp_cpu_get_cycle_count();
 	
-	// --- RX Phase using regular GPIO.in ---
+	// ── RX phase: tightest possible polling loop ─────────────────────────
+	// load + store + addi + bne ≈ 4 cycles/sample at 240 MHz ≈ 60 MHz sample
+	// rate → ~5 samples per 12 Mbps bit, which is plenty for run-length decode.
 	{
 		register volatile uint32_t *gpio_in_reg = &GPIO.in;
 		register uint32_t *raw_dst = fs_raw_samples;
 		register uint32_t *raw_end = fs_raw_samples + FS_RX_SAMPLES;
-		
 		while (raw_dst < raw_end) {
 			*raw_dst++ = *gpio_in_reg;
 		}
@@ -1005,44 +987,15 @@ void IRAM_ATTR sendSOF()
 		sof_dbg_count = 1;
 	}
 	
-	// TX-only: drive the packet out without RX
-	static const uint8_t dedic_map[4] = {DEDIC_K, DEDIC_J, DEDIC_SE0, DEDIC_SE0};
+	int count = transmit_NRZI_buffer_cnt;
+	fs_precompute_tx_dedic(transmit_NRZI_buffer, count);
 	
-	// Write J BEFORE enabling output to avoid glitch on driver activation
 	dedic_gpio_cpu_ll_write_all(DEDIC_J);
 	SET_O;
-	// J idle preamble (~2 bit times) before TX
-	__asm__ __volatile__(
-		"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
-		"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
-		"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
-		"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop"
-	);
 	
-	// TX using INTERLEAVED writes to avoid SE1 glitches
 	uint32_t irq_state = XTOS_DISABLE_ALL_INTERRUPTS;
-	{
-		register uint8_t *tx_ptr = transmit_NRZI_buffer;
-		register uint8_t *tx_end_ptr = transmit_NRZI_buffer + transmit_NRZI_buffer_cnt;
-		register uint32_t next_edge = esp_cpu_get_cycle_count() + FS_CYCLES_PER_BIT;
-		register uint8_t prev_state = DEDIC_J;  // Bus was at J idle
-		
-		while (tx_ptr < tx_end_ptr) {
-			register uint8_t new_state = dedic_map[*tx_ptr++];
-			
-			// Transition via SE0 to avoid SE1 glitches
-			if ((prev_state == DEDIC_J && new_state == DEDIC_K) ||
-			    (prev_state == DEDIC_K && new_state == DEDIC_J)) {
-				DEDIC_TRANSITION_VIA_SE0(new_state);
-			} else {
-				dedic_gpio_cpu_ll_write_all(new_state);
-			}
-			prev_state = new_state;
-			
-			while ((int32_t)(next_edge - esp_cpu_get_cycle_count()) > 0) {}
-			next_edge += FS_CYCLES_PER_BIT;
-		}
-	}
+	fs_drive_j_for(FS_CYCLES_PER_BIT * 2);
+	fs_tx_critical(count, NULL, NULL);
 	XTOS_RESTORE_INTLEVEL(irq_state);
 	SET_I;
 	
@@ -1211,9 +1164,6 @@ void timerCallBack()
 		
 		// One-time deep bus probe: send an IN token and capture long RX
 		if (power_attempts == 0) {
-			static const uint8_t dedic_map_probe[4] = {DEDIC_K, DEDIC_J, DEDIC_SE0, DEDIC_SE0};
-			
-			// Build an IN token to addr 0, ep 0
 			restart();
 			transmit_bits_buffer_store_cnt = 0;
 			pu_Addr(T_IN, 0, 0b0000);
@@ -1221,65 +1171,37 @@ void timerCallBack()
 			int in_len = transmit_NRZI_buffer_cnt;
 			printf("PROBE IN token (%d bits): ", in_len);
 			for (int i = 0; i < in_len && i < 60; i++) {
-				printf("%c", transmit_NRZI_buffer[i] == USB_LS_K ? 'K' : 
+				printf("%c", transmit_NRZI_buffer[i] == USB_LS_K ? 'K' :
 				       transmit_NRZI_buffer[i] == USB_LS_J ? 'J' :
 				       transmit_NRZI_buffer[i] == USB_LS_S ? '0' : '?');
 			}
 			printf("\n");
 			
-			// Trim trailing J idle from EOP
-			while (in_len > 3 && 
+			// Trim trailing J idle from EOP for fast RX turnaround
+			while (in_len > 3 &&
 			       transmit_NRZI_buffer[in_len - 1] == USB_LS_J &&
 			       transmit_NRZI_buffer[in_len - 2] == USB_LS_J) {
 				in_len--;
 			}
-			transmit_NRZI_buffer_cnt = in_len;
 			
-			// TX the IN token + capture long RX
-			// Write J BEFORE enabling output to avoid glitch
+			fs_precompute_tx_dedic(transmit_NRZI_buffer, in_len);
+			
 			dedic_gpio_cpu_ll_write_all(DEDIC_J);
 			SET_O;
-			// J idle preamble (~2 bit times) before TX
-			__asm__ __volatile__(
-				"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
-				"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
-				"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
-				"nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop"
-			);
 			PIN_INPUT_ENABLE(GPIO_PIN_MUX_REG[DP_PIN]);
 			PIN_INPUT_ENABLE(GPIO_PIN_MUX_REG[DM_PIN]);
+			
 			#define PROBE_RX_SAMPLES 4096
 			static uint32_t probe_samples[PROBE_RX_SAMPLES];
 			
 			uint32_t irq_state_probe = XTOS_DISABLE_ALL_INTERRUPTS;
+			fs_drive_j_for(FS_CYCLES_PER_BIT * 2);
+			fs_tx_critical(in_len, NULL, NULL);
+			
+			// Release driver immediately (no spurious SE0 write — the buffer's
+			// last state is already J, the bus pull-up keeps it that way).
+			GPIO.enable_w1tc = (DP_PIN_M | DM_PIN_M);
 			{
-				// TX using FAST SET/CLEAR instructions to avoid SE1 glitches
-				register uint8_t *tx_ptr = transmit_NRZI_buffer;
-				register uint8_t *tx_end_ptr = transmit_NRZI_buffer + transmit_NRZI_buffer_cnt;
-				register uint32_t next_edge = esp_cpu_get_cycle_count() + FS_CYCLES_PER_BIT;
-				register uint8_t prev_state = DEDIC_J;  // Bus was at J idle
-				
-				while (tx_ptr < tx_end_ptr) {
-					register uint8_t new_state = dedic_map_probe[*tx_ptr++];
-					
-					// Transition via SE0 to avoid SE1 glitches
-					if ((prev_state == DEDIC_J && new_state == DEDIC_K) ||
-					    (prev_state == DEDIC_K && new_state == DEDIC_J)) {
-						DEDIC_TRANSITION_VIA_SE0(new_state);
-					} else {
-						dedic_gpio_cpu_ll_write_all(new_state);
-					}
-					prev_state = new_state;
-					
-					while ((int32_t)(next_edge - esp_cpu_get_cycle_count()) > 0) {}
-					next_edge += FS_CYCLES_PER_BIT;
-				}
-				
-				// Switch to RX
-				dedic_gpio_cpu_ll_write_all(DEDIC_SE0);
-				GPIO.enable_w1tc = (DP_PIN_M | DM_PIN_M);
-				
-				// Sample bus using regular GPIO.in
 				register volatile uint32_t *gpio_in_p = &GPIO.in;
 				register uint32_t *dst = probe_samples;
 				register uint32_t *end = probe_samples + PROBE_RX_SAMPLES;
@@ -2094,40 +2016,23 @@ void initStates(int DP0, int DM0, int DP1, int DM1, int DP2, int DM2, int DP3, i
 			// Test 2: Actual TX loop timing test using esp_timer for ground truth
 			{
 				printf("TX LOOP TIMING TEST:\n");
-				#define TIMING_TEST_N 1000
+				// Cap at fs_tx_dedic_buf size; smaller N still gives accurate cyc/bit.
+				#define TIMING_TEST_N (DEF_BUFF_SIZE)
 				
-				// Create a test buffer (alternating J/K like SYNC)
-				static uint8_t timing_buf[TIMING_TEST_N];
-				for (int i = 0; i < TIMING_TEST_N; i++) timing_buf[i] = (i & 1) ? USB_LS_J : USB_LS_K;
-				static const uint8_t timing_dedic_map[4] = {DEDIC_K, DEDIC_J, DEDIC_SE0, DEDIC_SE0};
+				// Build alternating J/K test pattern straight into the dedic buffer.
+				// We bypass fs_precompute_tx_dedic() so the test exercises *exactly*
+				// the same fs_tx_critical loop the real TX path uses.
+				for (int i = 0; i < TIMING_TEST_N; i++) {
+					fs_tx_dedic_buf[i] = (i & 1) ? DEDIC_J : DEDIC_K;
+				}
 				
 				dedic_gpio_cpu_ll_write_all(DEDIC_J);
 				SET_O;
 				ets_delay_us(10);
 				
-				// Measure with cycle counter (using INTERLEAVED writes)
+				uint32_t tt_start, tt_end;
 				uint32_t irq_tt = XTOS_DISABLE_ALL_INTERRUPTS;
-				uint32_t tt_start = esp_cpu_get_cycle_count();
-				{
-					register uint8_t *tx_ptr = timing_buf;
-					register uint8_t *tx_end_ptr = timing_buf + TIMING_TEST_N;
-					register uint32_t next_edge = tt_start + FS_CYCLES_PER_BIT;
-					register uint8_t prev_state = DEDIC_J;
-					
-					while (tx_ptr < tx_end_ptr) {
-						register uint8_t new_state = timing_dedic_map[*tx_ptr++];
-						if ((prev_state == DEDIC_J && new_state == DEDIC_K) ||
-						    (prev_state == DEDIC_K && new_state == DEDIC_J)) {
-							DEDIC_TRANSITION_VIA_SE0(new_state);
-						} else {
-							dedic_gpio_cpu_ll_write_all(new_state);
-						}
-						prev_state = new_state;
-						while ((int32_t)(next_edge - esp_cpu_get_cycle_count()) > 0) {}
-						next_edge += FS_CYCLES_PER_BIT;
-					}
-				}
-				uint32_t tt_end = esp_cpu_get_cycle_count();
+				fs_tx_critical(TIMING_TEST_N, &tt_start, &tt_end);
 				XTOS_RESTORE_INTLEVEL(irq_tt);
 				SET_I;
 				
@@ -2135,35 +2040,17 @@ void initStates(int DP0, int DM0, int DP1, int DM1, int DP2, int DM2, int DP3, i
 				float tt_per_bit = (float)tt_cyc / TIMING_TEST_N;
 				float tt_mhz = 240.0f / tt_per_bit;
 				float tt_ns_per_bit = tt_per_bit * (1000.0f / 240.0f);
-				printf("  Cycle counter: %lu cyc for %d bits = %.2f cyc/bit = %.1f ns/bit = %.2f MHz (SE0 DELAY)\n",
+				printf("  Cycle counter: %lu cyc for %d bits = %.2f cyc/bit = %.1f ns/bit = %.2f MHz\n",
 				       (unsigned long)tt_cyc, TIMING_TEST_N, tt_per_bit, tt_ns_per_bit, tt_mhz);
 				
-				// Now measure the same thing with esp_timer for independent verification
+				// Independent verification via esp_timer
 				dedic_gpio_cpu_ll_write_all(DEDIC_J);
 				SET_O;
 				ets_delay_us(10);
 				
 				int64_t us_start = esp_timer_get_time();
 				uint32_t irq_tt2 = XTOS_DISABLE_ALL_INTERRUPTS;
-				{
-					register uint8_t *tx_ptr = timing_buf;
-					register uint8_t *tx_end_ptr = timing_buf + TIMING_TEST_N;
-					register uint32_t next_edge = esp_cpu_get_cycle_count() + FS_CYCLES_PER_BIT;
-					register uint8_t prev_state = DEDIC_J;
-					
-					while (tx_ptr < tx_end_ptr) {
-						register uint8_t new_state = timing_dedic_map[*tx_ptr++];
-						if ((prev_state == DEDIC_J && new_state == DEDIC_K) ||
-						    (prev_state == DEDIC_K && new_state == DEDIC_J)) {
-							DEDIC_TRANSITION_VIA_SE0(new_state);
-						} else {
-							dedic_gpio_cpu_ll_write_all(new_state);
-						}
-						prev_state = new_state;
-						while ((int32_t)(next_edge - esp_cpu_get_cycle_count()) > 0) {}
-						next_edge += FS_CYCLES_PER_BIT;
-					}
-				}
+				fs_tx_critical(TIMING_TEST_N, NULL, NULL);
 				XTOS_RESTORE_INTLEVEL(irq_tt2);
 				int64_t us_end = esp_timer_get_time();
 				SET_I;
@@ -2178,8 +2065,7 @@ void initStates(int DP0, int DM0, int DP1, int DM1, int DP2, int DM2, int DP3, i
 					printf("  WARNING: Cycle counter and esp_timer disagree!\n");
 				}
 				
-				// Also check: expected 83.3ns, actual timing
-				float expected_ns = 1000.0f / 12.0f;  // 83.33ns for 12MHz
+				float expected_ns = 1000.0f / 12.0f;  // 83.33 ns for 12 MHz
 				float error_pct = ((timer_ns_per_bit - expected_ns) / expected_ns) * 100.0f;
 				printf("  Target: %.1f ns/bit (12 MHz), Error: %+.1f%%\n", expected_ns, error_pct);
 				

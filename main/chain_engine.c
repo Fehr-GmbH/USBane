@@ -158,7 +158,7 @@ static esp_err_t parse_csv_line_to_entry(char *line, chain_entry_t *entry) {
             entry->ctrl.deviceAddr = (uint8_t)parse_hex_or_dec(fields[9]);
         }
         if (field_count > 10 && fields[10]) {
-            ESP_LOGI("CHAIN", "Parsing flags field[10]: '%s' (field_count=%d)", fields[10], field_count);
+            ESP_LOGD("CHAIN", "Flags: '%s' (fields=%d)", fields[10], field_count);
             if (strstr(fields[10], "noretry")) entry->flags |= CHAIN_FLAG_NO_RETRY;
             if (strstr(fields[10], "setuponly")) entry->flags |= CHAIN_FLAG_SETUP_ONLY;
             const char *ep = strstr(fields[10], "ep");
@@ -336,6 +336,32 @@ static esp_err_t parse_csv_line_to_entry(char *line, chain_entry_t *entry) {
                      field_names[entry->add32.field]);
             return ESP_OK;
         }
+        // action,sub32,<decrement>,<entry_byte0>,<entry_byte1>,<entry_byte2>,<entry_byte3>[,<field>]
+        // Subtracts decrement from 32-bit value formed by field of 4 entries (with borrow)
+        // <field> is optional: wValue (default), wIndex, wLength
+        if (strcmp(action_type, "sub32") == 0 && field_count >= 7) {
+            entry->type = CHAIN_TYPE_ACTION_SUB32;
+            entry->add32.increment = (uint32_t)parse_hex_or_dec(fields[2]);
+            entry->add32.entryIdx[0] = (uint8_t)parse_hex_or_dec(fields[3]);
+            entry->add32.entryIdx[1] = (uint8_t)parse_hex_or_dec(fields[4]);
+            entry->add32.entryIdx[2] = (uint8_t)parse_hex_or_dec(fields[5]);
+            entry->add32.entryIdx[3] = (uint8_t)parse_hex_or_dec(fields[6]);
+            entry->add32.field = 0;
+            if (field_count >= 8 && fields[7][0] != '\0') {
+                if (strcasecmp(fields[7], "wIndex") == 0) {
+                    entry->add32.field = 1;
+                } else if (strcasecmp(fields[7], "wLength") == 0) {
+                    entry->add32.field = 2;
+                }
+            }
+            const char *field_names2[] = {"wValue", "wIndex", "wLength"};
+            ESP_LOGI(TAG, "sub32: decrement=0x%lx, entries=[%d,%d,%d,%d], field=%s",
+                     (unsigned long)entry->add32.increment,
+                     entry->add32.entryIdx[0], entry->add32.entryIdx[1],
+                     entry->add32.entryIdx[2], entry->add32.entryIdx[3],
+                     field_names2[entry->add32.field]);
+            return ESP_OK;
+        }
         return ESP_ERR_NOT_SUPPORTED;
     }
     
@@ -496,8 +522,8 @@ static esp_err_t execute_entry(chain_entry_t *entry, chain_result_t *result) {
             config.max_nak_retries = (entry->flags & CHAIN_FLAG_NO_RETRY) ? 0 : -1;
             config.timeout_ms = 100;
             if (config.setup_only || config.max_nak_retries == 0) {
-                ESP_LOGI("CHAIN", "Control transfer flags: setup_only=%d, max_nak_retries=%d (entry->flags=0x%02x)",
-                         config.setup_only, config.max_nak_retries, entry->flags);
+                ESP_LOGD("CHAIN", "Flags: setup_only=%d noretry=%d (0x%02x)",
+                         config.setup_only, config.max_nak_retries == 0, entry->flags);
             }
             config.expect_response = (entry->ctrl.bmRequestType & 0x80) != 0;
             config.response_buffer = result->data;
@@ -818,18 +844,13 @@ esp_err_t chain_execute_csv(const char *csv_data, size_t csv_len,
         
         if (entry->type == CHAIN_TYPE_ACTION_COPY) {
             execute_copy(entry, entries, entry_count, i);
-            if (result_cb) {
-                memset(&result, 0, sizeof(result));
-                result.type = CHAIN_TYPE_ACTION_COPY;
-                result.status = 0;
-                result_cb(i, &result, user_data);
-            }
+            // No callback for internal actions (avoids empty WS messages)
             i++;
             continue;
         }
         
         if (entry->type == CHAIN_TYPE_ACTION_GOTO) {
-            ESP_LOGI(TAG, "GOTO → entry %d", entry->jump.targetIndex);
+            ESP_LOGD(TAG, "GOTO → entry %d", entry->jump.targetIndex);
             i = entry->jump.targetIndex;
             continue;
         }
@@ -858,18 +879,45 @@ esp_err_t chain_execute_csv(const char *csv_data, size_t csv_len,
                 }
             }
             const char *field_names[] = {"wValue", "wIndex", "wLength"};
-            ESP_LOGI(TAG, "ADD32 [%s]: 0x%08lx + 0x%lx = 0x%08lx",
+            ESP_LOGD(TAG, "ADD32 [%s]: 0x%08lx + 0x%lx = 0x%08lx",
                      field_names[field],
                      (unsigned long)old_val, (unsigned long)entry->add32.increment, (unsigned long)val);
             
             #undef ADD32_GET_FIELD
             #undef ADD32_SET_FIELD
-            if (result_cb) {
-                memset(&result, 0, sizeof(result));
-                result.type = CHAIN_TYPE_ACTION_ADD32;
-                result.status = 0;
-                result_cb(i, &result, user_data);
+            // No callback for internal actions (avoids empty WS messages)
+            i++;
+            continue;
+        }
+
+        if (entry->type == CHAIN_TYPE_ACTION_SUB32) {
+            #define SUB32_GET_FIELD(e, f) ((f) == 1 ? (e).ctrl.wIndex : (f) == 2 ? (e).ctrl.wLength : (e).ctrl.wValue)
+            #define SUB32_SET_FIELD(e, f, v) do { if ((f) == 1) (e).ctrl.wIndex = (v); else if ((f) == 2) (e).ctrl.wLength = (v); else (e).ctrl.wValue = (v); } while(0)
+            
+            uint8_t field = entry->add32.field;
+            uint32_t val = 0;
+            for (int b = 0; b < 4; b++) {
+                int idx = entry->add32.entryIdx[b];
+                if (idx < entry_count && entries[idx].type == CHAIN_TYPE_CONTROL) {
+                    val |= ((uint32_t)(SUB32_GET_FIELD(entries[idx], field) & 0xFF)) << (b * 8);
+                }
             }
+            uint32_t old_val = val;
+            val -= entry->add32.increment;
+            for (int b = 0; b < 4; b++) {
+                int idx = entry->add32.entryIdx[b];
+                if (idx < entry_count && entries[idx].type == CHAIN_TYPE_CONTROL) {
+                    SUB32_SET_FIELD(entries[idx], field, (val >> (b * 8)) & 0xFF);
+                }
+            }
+            const char *field_names2[] = {"wValue", "wIndex", "wLength"};
+            ESP_LOGD(TAG, "SUB32 [%s]: 0x%08lx - 0x%lx = 0x%08lx",
+                     field_names2[field],
+                     (unsigned long)old_val, (unsigned long)entry->add32.increment, (unsigned long)val);
+            
+            #undef SUB32_GET_FIELD
+            #undef SUB32_SET_FIELD
+            // No callback for internal actions
             i++;
             continue;
         }
@@ -886,12 +934,7 @@ esp_err_t chain_execute_csv(const char *csv_data, size_t csv_len,
             } else {
                 ESP_LOGW(TAG, "Unknown config action: %s=%s", key, value);
             }
-            if (result_cb) {
-                memset(&result, 0, sizeof(result));
-                result.type = CHAIN_TYPE_ACTION_CONFIG;
-                result.status = 0;
-                result_cb(i, &result, user_data);
-            }
+            // No callback for internal actions (avoids empty WS messages)
             i++;
             continue;
         }

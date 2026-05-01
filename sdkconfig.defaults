@@ -1,11 +1,18 @@
 # USBane Configuration
-CONFIG_USBANE_VERSION="0.2.3"
+CONFIG_USBANE_VERSION="0.2.4"
 
-# Partition Table - Use two OTA partitions for future OTA updates (1700KB each)
-CONFIG_PARTITION_TABLE_TWO_OTA_LARGE=y
+# Partition Table — custom 4 MiB layout with two 1.5 MiB OTA slots.
+# Targets the most common ESP32-S3 modules (ESP32-S3-WROOM-1-N4, dev boards
+# with 4 MB QSPI flash).  Larger flash modules still work fine; the extra
+# space simply remains unused unless you switch back to TWO_OTA_LARGE or
+# enlarge the slot sizes in partitions.csv.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# Flash Configuration - 8MB for extra space, QIO mode for performance
-CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# Flash Configuration — 4 MiB minimum (works on 4/8/16/32 MiB modules).
+# QIO mode + 80 MHz for best read performance (falls back automatically on
+# DIO-only modules at startup).
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHMODE="qio"

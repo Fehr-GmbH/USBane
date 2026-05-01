@@ -1,0 +1,21 @@
+# USBane partition table — fits in 4MB flash with two OTA slots.
+#
+# Layout (4 MiB = 0x400000):
+#   0x000000 .. 0x008000   bootloader            (≤ 32 KiB)
+#   0x008000 .. 0x009000   partition table       (4 KiB, fixed by IDF)
+#   0x009000 .. 0x00F000   nvs                   (24 KiB)
+#   0x00F000 .. 0x011000   otadata               (8 KiB)
+#   0x011000 .. 0x012000   phy_init              (4 KiB)
+#   0x020000 .. 0x1A0000   ota_0  (app)          (1536 KiB / 1.5 MiB)
+#   0x1A0000 .. 0x320000   ota_1  (app)          (1536 KiB / 1.5 MiB)
+#   0x320000 .. 0x400000   <free>                (896 KiB headroom / future SPIFFS)
+#
+# Current usbane.bin ~1.28 MiB — leaves ~256 KiB growth room per slot.
+# To target an 8 MiB module, just pick CONFIG_PARTITION_TABLE_TWO_OTA_LARGE
+# from menuconfig instead of this CSV (or grow the slot sizes here).
+# Name,    Type, SubType,  Offset,   Size,  Flags
+nvs,       data, nvs,      0x9000,   0x6000,
+otadata,   data, ota,      0xf000,   0x2000,
+phy_init,  data, phy,      0x11000,  0x1000,
+ota_0,     app,  ota_0,    0x20000,  0x180000,
+ota_1,     app,  ota_1,    0x1A0000, 0x180000,

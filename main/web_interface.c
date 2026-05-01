@@ -877,7 +877,7 @@ static esp_err_t api_trigger_handler(httpd_req_t *req)
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         char id_buf[TRIGGER_ID_MAX_LEN] = {0};
         if (httpd_query_key_value(query, "id", id_buf, sizeof(id_buf)) == ESP_OK && strlen(id_buf) > 0) {
-            strncpy(trigger_id, id_buf, TRIGGER_ID_MAX_LEN - 1);
+            snprintf(trigger_id, TRIGGER_ID_MAX_LEN, "%s", id_buf);
         }
         httpd_query_key_value(query, "state", state_str, sizeof(state_str));
     }
@@ -920,8 +920,7 @@ static esp_err_t api_trigger_handler(httpd_req_t *req)
             }
             
             if (!already_exists && triggered_count < MAX_TRIGGERS) {
-                strncpy(triggered_ids[triggered_count], trigger_id, TRIGGER_ID_MAX_LEN - 1);
-                triggered_ids[triggered_count][TRIGGER_ID_MAX_LEN - 1] = '\0';
+                snprintf(triggered_ids[triggered_count], TRIGGER_ID_MAX_LEN, "%s", trigger_id);
                 triggered_count++;
                 ESP_LOGI(TAG, "Trigger activated: %s", trigger_id);
             }
@@ -1327,7 +1326,7 @@ static void chain_ws_callback(int index, const chain_result_t *result, void *use
         ESP_LOGW(TAG, "WS callback: no connection (fd=%d)", chain_ws_fd);
         return;
     }
-    ESP_LOGI(TAG, "WS callback: index=%d status=%d bytes=%d data_len=%d", 
+    ESP_LOGD(TAG, "WS cb: i=%d s=%d b=%d d=%d", 
              index, result->status, result->bytes_received, result->data_len);
     
     // Check if this is a button wait result - send waiting message
@@ -1359,11 +1358,11 @@ static void chain_ws_callback(int index, const chain_result_t *result, void *use
             }
             hex_str[result->data_len * 2] = '\0';
             cJSON_AddStringToObject(root, "d", hex_str);
-            ESP_LOGI(TAG, "WS callback: sending %d bytes hex: %.32s...", result->data_len, hex_str);
+            ESP_LOGD(TAG, "WS cb: %d bytes hex", result->data_len);
             free(hex_str);
         }
     } else {
-        ESP_LOGW(TAG, "WS callback: data_len is 0, no hex data to send");
+        ESP_LOGD(TAG, "WS cb: no data");
     }
     
     chain_ws_send_json(root);

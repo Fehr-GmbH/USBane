@@ -6,7 +6,7 @@
 [![Build](https://github.com/Fehr-GmbH/USBane/actions/workflows/build.yml/badge.svg)](https://github.com/Fehr-GmbH/USBane/actions/workflows/build.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Platform](https://img.shields.io/badge/Platform-ESP32--S3-orange.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
-[![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.x-green.svg)](https://github.com/espressif/esp-idf)
+[![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v6.0-green.svg)](https://github.com/espressif/esp-idf)
 [![GitHub release](https://img.shields.io/github/v/release/Fehr-GmbH/USBane?include_prereleases)](https://github.com/Fehr-GmbH/USBane/releases)
 
 <p align="center"><b>USB Security Research Tool for ESP32-S3</b></p>
@@ -52,20 +52,27 @@ USBane is an open-source USB security research framework that enables direct har
 ## Hardware Requirements
 
 - ESP32-S3 development board with USB OTG support
-- **Minimum 8MB flash** recommended (supports OTA updates)
+- **4 MiB flash minimum** — fits the ~1.3 MiB firmware in two 1.5 MiB OTA slots
+  with ~250 KiB headroom each (8/16/32 MiB modules also work; the extra space
+  is simply left unused unless you switch back to a larger partition table)
 - USB OTG cable/adapter for connecting target devices
 - Target USB device for testing
 - (Optional) GPIO pins for hardware triggers/control
 
 ### Recommended Board
 
-[**Freenove ESP32-S3-WROOM**](https://store.freenove.com/products/fnk0085)
+[**Freenove ESP32-S3-WROOM**](https://store.freenove.com/products/fnk0085) — but
+any ESP32-S3 module with USB OTG works, including the cheap 4 MiB
+ESP32-S3-WROOM-1-N4 variants found on most Aliexpress dev boards.
 
 ## Quick Start
 
 ### Prerequisites
-- ESP-IDF v5.x installed and configured
-- ESP32-S3 board with 8MB+ flash
+- ESP-IDF **v6.0** (v6.0.1 or newer recommended) — see
+  [Get Started](https://docs.espressif.com/projects/esp-idf/en/v6.0/esp32s3/get-started/index.html).
+  cJSON and the USB host stack are pulled automatically from the IDF
+  Component Registry via `main/idf_component.yml`.
+- ESP32-S3 board with **≥ 4 MiB flash**
 
 ### Build and Flash
 
@@ -372,7 +379,9 @@ action,comment,Device enumerated successfully
 ├── apptext.svg            # Logo text for README
 ├── LIMITATIONS.md         # Known issues with GPIO bit-bang backend
 ├── CMakeLists.txt
-├── sdkconfig.defaults
+├── sdkconfig.defaults     # Default Kconfig (4 MiB flash, custom partitions)
+├── partitions.csv         # 4 MiB layout: 1.5 MiB × 2 OTA slots + nvs/otadata
+├── dependencies.lock      # Pinned versions of registry components (committed)
 └── COPYING
 ```
 
